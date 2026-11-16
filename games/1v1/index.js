@@ -5,17 +5,25 @@ import { Err } from "../../src/photon/codes.js";
 import { log } from "../../src/log.js";
 import { nameServerOp } from "./nameserver.js";
 import { masterOp } from "./master.js";
+import { gameOp } from "./game.js";
 import { registry } from "./rooms.js";
+import { paramSummary } from "./master.js";
+
+const DEBUG = process.env.MP_DEBUG === "1";
 
 const roles = {
   ns: nameServerOp,
   master: masterOp,
+  game: gameOp,
 };
 
 function attach(role, handle) {
   return photonUpgrade((peer) => {
     peer.state.role = role;
     peer.on("op", (opCode, params, rawParams) => {
+      if (DEBUG && !(role === "game" && opCode === 253 && [201, 206].includes(params.get(244)?.v ?? params.get(244)))) {
+        log("op", { role, peer: peer.id, actor: peer.state.actor?.actorNr, op: opCode, params: paramSummary(params) });
+      }
       try {
         if (handle(peer, opCode, params, rawParams) === false) {
           log("unknown_op", { role, op: opCode, params: [...params.keys()] });

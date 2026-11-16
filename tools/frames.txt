@@ -1,0 +1,7 @@
+# Frames captured from 1v1.lol (build 3.800) talking to ns.exitgames.com, 2026-11-16.
+# <kind> <hex of the whole websocket message>
+request f302dc01e0072438323632303533312d383733372d343832342d386664322d613464323965323431376438
+response f303dcff7f07134170706c69636174696f6e417263686976656400
+internal-request f3060101010d9906
+internal-response f3070100000802010d99060209d1bcc8a703
+init-response f30100

@@ -4,9 +4,12 @@ import { photonUpgrade, traffic } from "../../src/photon/peer.js";
 import { Err } from "../../src/photon/codes.js";
 import { log } from "../../src/log.js";
 import { nameServerOp } from "./nameserver.js";
+import { masterOp } from "./master.js";
+import { registry } from "./rooms.js";
 
 const roles = {
   ns: nameServerOp,
+  master: masterOp,
 };
 
 function attach(role, handle) {
@@ -37,6 +40,6 @@ export default {
     upgrade(req, socket, head);
   },
   stats() {
-    return { peers: traffic.peers, bytesIn: traffic.bytesIn, bytesOut: traffic.bytesOut };
+    return { peers: traffic.peers, rooms: registry.count(), players: registry.players(), bytesIn: traffic.bytesIn, bytesOut: traffic.bytesOut };
   },
 };

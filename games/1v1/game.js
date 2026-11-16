@@ -7,6 +7,7 @@ import { encodeEvent } from "../../src/photon/peer.js";
 import { authenticate } from "./nameserver.js";
 import { registry, Actor, RoomFlag, sameValue, int, encodedSize, PROPS_MAX_BYTES, CACHE_MAX_BYTES, CACHE_ENTRY_MAX_BYTES } from "./rooms.js";
 import { enteredRoom, leftRoom } from "./presence.js";
+import { withName } from "./names.js";
 import { applyCreateOptions, describe } from "./master.js";
 import { log } from "../../src/log.js";
 
@@ -87,7 +88,7 @@ function enterNow(peer, opCode, params) {
     if (!room.hasSpaceFor(userId)) return peer.respond(opCode, Err.GameFull, new Map(), "Game full");
   }
 
-  const joinProps = params.get(Param.PlayerProperties) instanceof Hashtable ? params.get(Param.PlayerProperties) : null;
+  const joinProps = withName(params.get(Param.PlayerProperties) instanceof Hashtable ? params.get(Param.PlayerProperties) : new Hashtable(), peer.state.name);
   if (joinProps && encodedSize(joinProps) + room.propBytes + room.actorPropBytes() > PROPS_MAX_BYTES) {
     return peer.respond(opCode, Err.InvalidOperation, new Map(), "Player properties too large");
   }
@@ -121,7 +122,7 @@ function enterNow(peer, opCode, params) {
     throw err;
   }
   enteredRoom(userId, room.name);
-  log("join_room", { peer: peer.id, room: room.name, actor: actor.actorNr, players: room.actors.size, max: room.maxPlayers, props: describe(room.props) });
+  log("join_room", { peer: peer.id, room: room.name, actor: actor.actorNr, name: peer.state.name, players: room.actors.size, max: room.maxPlayers, props: describe(room.props) });
 
   // Everyone, the joiner too, gets the Join event; then the joiner gets the cache.
   if (!(room.flags & RoomFlag.SuppressRoomEvents)) {
@@ -319,6 +320,9 @@ function setProperties(peer, opCode, params) {
       if (v === null) next.delete(k);
       else next.set(k, v);
     }
+    // The game sometimes clears the name; keep the one we know.
+    withName(next, target.peer.state.name);
+    withName(props, target.peer.state.name);
     const nextBytes = encodedSize(next);
     if (room.propBytes + room.actorPropBytes() - target.propBytes + nextBytes > PROPS_MAX_BYTES) {
       return peer.respond(opCode, Err.InvalidOperation, new Map(), "Properties too large");

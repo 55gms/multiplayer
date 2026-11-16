@@ -51,6 +51,12 @@ export default {
   // without. userSettings/time drives the daily mode rotation; the original
   // answered with the date as a JSON string.
   http(req, res, rest) {
+    // Region ping (PUN on WebGL times an HTTP GET to the region's host):
+    // an empty 200 is a successful ping.
+    if (rest === "ping") {
+      res.writeHead(200, { "content-type": "text/plain", "access-control-allow-origin": "*", "cache-control": "no-store" });
+      return res.end();
+    }
     if (rest === "time" && (req.method === "GET" || req.method === "POST" || req.method === "OPTIONS")) {
       res.writeHead(200, {
         "content-type": "application/json; charset=utf-8",

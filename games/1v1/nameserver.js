@@ -6,6 +6,7 @@ import { Op, Param, Err } from "../../src/photon/codes.js";
 import { StringArray } from "../../src/photon/protocol18.js";
 import { address } from "./address.js";
 import { connected } from "./presence.js";
+import { playerName } from "./names.js";
 import { log } from "../../src/log.js";
 
 export const REGION = "eu";
@@ -64,12 +65,15 @@ export function authenticate(peer, opCode, params, role) {
   const asked = params.get(Param.UserId);
   const userId = known || (typeof asked === "string" && asked ? asked.slice(0, 64) : randomUUID());
   peer.state.userId = userId;
+  peer.state.name = playerName(peer.query.get("name"));
   peer.state.authenticated = true;
   if (role !== "ns") connected(peer);
   const out = new Map([
     [Param.UserId, userId],
     [Param.Secret, makeToken(userId)],
   ]);
+  // PUN takes the player's name from the name server's and master's answer.
+  if (role !== "game" && peer.state.name) out.set(Param.Nickname, peer.state.name);
   if (role === "ns") {
     out.set(Param.Address, address(peer, "master"));
     out.set(Param.Cluster, "default");

@@ -35,6 +35,7 @@ export class Peer extends EventEmitter {
     // reaches Caddy over plain HTTP, so only local hosts get ws://.
     this.scheme = isLocalHost(this.host) ? "ws" : "wss";
     this.state = {};
+    this.query = new URL(req.url || "/", "http://x").searchParams;
     this.closed = false;
     this.release = release;
     this.limiter = rateLimiter();

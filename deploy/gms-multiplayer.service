@@ -8,8 +8,9 @@ WorkingDirectory=/root/multiplayer
 Environment=PORT=8093
 Environment=HOST=127.0.0.1
 Environment=NODE_ENV=production
+Environment=HOME=/root
 # Node comes from nvm on the server; this resolves its current default.
-ExecStart=/bin/bash -lc '. "$HOME/.nvm/nvm.sh" >/dev/null 2>&1; exec node index.js'
+ExecStart=/bin/bash -c '. /root/.nvm/nvm.sh >/dev/null 2>&1; exec node index.js'
 Restart=always
 RestartSec=2
 LimitNOFILE=65536

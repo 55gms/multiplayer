@@ -10,6 +10,8 @@
 //     --close-at P@S     close page P (1-based) S seconds in
 //     --shots DIR        save a screenshot per page at the end (default captures/)
 //     --hex              print frame bytes as well as their summary
+//     --size WxH         viewport (default 1280x720; clicks are given in 1280x720
+//                        and scaled, so a small window renders faster on software GL)
 import { chromium } from "playwright-core";
 import fs from "node:fs";
 import path from "node:path";
@@ -20,7 +22,7 @@ if (!url) {
   console.error("usage: node tools/capture.mjs <url> [--pages N] [--secs S] [--mp BASE] [--click X,Y@S] [--shots DIR]");
   process.exit(1);
 }
-const opt = { pages: 1, secs: 60, mp: null, clicks: [], stagger: 0, closes: [], shots: "captures", hex: false };
+const opt = { pages: 1, secs: 60, mp: null, clicks: [], stagger: 0, closes: [], shots: "captures", hex: false, w: 1280, h: 720 };
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === "--pages") opt.pages = Number(args[++i]);
@@ -29,6 +31,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "--stagger") opt.stagger = Number(args[++i]);
   else if (a === "--shots") opt.shots = args[++i];
   else if (a === "--hex") opt.hex = true;
+  else if (a === "--size") [opt.w, opt.h] = args[++i].split("x").map(Number);
   else if (a === "--click") {
     const [xy, at] = args[++i].split("@");
     const [x, y] = xy.split(",").map(Number);
@@ -56,17 +59,31 @@ function describe(buf) {
   return `type ${type} code ${code}`;
 }
 
-const browser = await chromium.launch({
-  executablePath: process.env.CHROME_PATH || undefined,
-  args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist", "--autoplay-policy=no-user-gesture-required"],
-});
+// One browser per player, so no page is a throttled background tab.
+const launch = () =>
+  chromium.launch({
+    executablePath: process.env.CHROME_PATH || undefined,
+    args: [
+      "--use-gl=angle",
+      "--use-angle=swiftshader",
+      "--enable-unsafe-swiftshader",
+      "--ignore-gpu-blocklist",
+      "--autoplay-policy=no-user-gesture-required",
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows",
+    ],
+  });
+const browsers = [];
 const t0 = Date.now();
 const ts = () => ((Date.now() - t0) / 1000).toFixed(1).padStart(5);
 const pages = [];
 
 async function openPage(n) {
   const tag = `p${n}`;
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const browser = await launch();
+  browsers.push(browser);
+  const context = await browser.newContext({ viewport: { width: opt.w, height: opt.h } });
   if (opt.mp) await context.addInitScript((base) => localStorage.setItem("gms-mp-base", base), opt.mp);
   const page = await context.newPage();
   const say = (s) => console.log(`${ts()} ${tag} ${s}`);
@@ -97,21 +114,25 @@ async function openPage(n) {
   pages.push({ tag, page, context });
 }
 
+const opening = [];
 for (let i = 1; i <= opt.pages; i++) {
-  await openPage(i);
+  opening.push(openPage(i));
   if (opt.stagger) await new Promise((r) => setTimeout(r, opt.stagger));
 }
+await Promise.all(opening);
 
 const timers = [];
 for (const c of opt.clicks) {
   timers.push(
     new Promise((r) =>
       setTimeout(async () => {
-        for (const { tag, page } of pages) {
-          if (page.isClosed()) continue;
-          await page.mouse.click(c.x, c.y).catch(() => {});
-          console.log(`${ts()} ${tag} click ${c.x},${c.y}`);
-        }
+        await Promise.all(
+          pages.map(async ({ tag, page }) => {
+            if (page.isClosed()) return;
+            console.log(`${ts()} ${tag} click ${c.x},${c.y}`);
+            await page.mouse.click((c.x * opt.w) / 1280, (c.y * opt.h) / 720).catch(() => {});
+          }),
+        );
         r();
       }, c.at * 1000),
     ),
@@ -134,10 +155,12 @@ for (const c of opt.closes) {
 
 await new Promise((r) => setTimeout(r, opt.secs * 1000));
 fs.mkdirSync(opt.shots, { recursive: true });
-for (const { tag, page } of pages) {
-  if (page.isClosed()) continue;
-  const file = path.join(opt.shots, `${tag}.png`);
-  await page.screenshot({ path: file }).catch(() => {});
-  console.log(`${ts()} ${tag} screenshot ${file}`);
-}
-await browser.close();
+await Promise.all(
+  pages.map(async ({ tag, page }) => {
+    if (page.isClosed()) return;
+    const file = path.join(opt.shots, `${tag}.png`);
+    await page.screenshot({ path: file, timeout: 15000 }).catch(() => {});
+    console.log(`${ts()} ${tag} screenshot ${file}`);
+  }),
+);
+await Promise.all(browsers.map((b) => b.close()));

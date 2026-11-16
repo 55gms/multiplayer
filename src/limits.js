@@ -3,7 +3,9 @@
 export const MAX_MESSAGE_BYTES = 64 * 1024;
 export const IDLE_MS = 60_000;
 export const MAX_ROOM_PLAYERS = 16;
-export const MAX_CONNECTIONS_PER_IP = 8;
+// High because a whole school often shares one public address; each player
+// holds one or two connections at a time.
+export const MAX_CONNECTIONS_PER_IP = 64;
 const RATE_PER_SECOND = 120;
 const RATE_BURST = 240;
 
@@ -13,13 +15,17 @@ function isLoopback(address = "") {
   return address === "::1" || address.startsWith("127.") || address === "::ffff:127.0.0.1";
 }
 
-// Caddy is the only thing that connects from loopback in production, and it
-// puts the real client first in X-Forwarded-For.
+// Caddy is the only thing that connects from loopback in production. It
+// appends the address that connected to it to X-Forwarded-For, so the last
+// entry is the one a client cannot forge (the same rule as 55GMS).
 export function clientIp(req) {
   const address = req.socket.remoteAddress || "";
   if (isLoopback(address)) {
-    const forwarded = req.headers["x-forwarded-for"];
-    if (forwarded) return String(forwarded).split(",")[0].trim();
+    const forwarded = String(req.headers["x-forwarded-for"] || "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (forwarded.length) return forwarded.at(-1);
   }
   return address;
 }

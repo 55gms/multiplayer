@@ -55,6 +55,7 @@ export class Room {
     this.cache = []; // { actorNr, code, data: Uint8Array | null (encoded value), dataHex }
     this.reservations = new Map(); // userId -> expiry ms
     this.created = Date.now();
+    this.creatorUserId = null; // who made it on the master, until they arrive
   }
 
   get cap() {
@@ -167,13 +168,14 @@ class Registry {
   }
 
   // The oldest open, visible room with space whose properties match.
-  findRandom(expected, userId, lobbyName = "") {
+  findRandom(expected, userId, lobbyName = "", sql = null) {
     for (const room of this.rooms.values()) {
       if (!room.isOpen || !room.isVisible) continue;
       if ((room.lobbyName || "") !== (lobbyName || "")) continue;
       if (room.actors.size === 0 && room.liveReservations() === 0) continue;
       if (!room.hasSpaceFor(userId)) continue;
       if (!room.matches(expected)) continue;
+      if (sql && !sql.every(([k, v]) => room.props.has(k) && sameValue(room.props.get(k), v))) continue;
       return room;
     }
     return null;

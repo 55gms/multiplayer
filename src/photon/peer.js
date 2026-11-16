@@ -31,8 +31,9 @@ export class Peer extends EventEmitter {
     this.ws = ws;
     this.ip = clientIp(req);
     this.host = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost").split(",")[0].trim();
-    const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
-    this.scheme = proto === "https" || (!proto && !isLocalHost(this.host)) ? "wss" : "ws";
+    // Public hosts are always served over TLS at the edge, even when a CDN
+    // reaches Caddy over plain HTTP, so only local hosts get ws://.
+    this.scheme = isLocalHost(this.host) ? "ws" : "wss";
     this.state = {};
     this.closed = false;
     this.release = release;

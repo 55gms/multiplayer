@@ -2,7 +2,7 @@
 # The only command the GitHub Actions deploy key may run (forced command in
 # /root/.ssh/authorized_keys). Installed by hand at /root/deploy-mp/entry.sh;
 # copy it there again when this file changes. See README.md.
-set -euo pipefail
+set -Eeuo pipefail
 
 APP_DIR="${APP_DIR:-/root/multiplayer}"
 STATE_DIR="${STATE_DIR:-/root/deploy-mp}"

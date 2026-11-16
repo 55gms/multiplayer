@@ -47,6 +47,22 @@ export default {
     if (!upgrade) return socket.destroy();
     upgrade(req, socket, head);
   },
+  // Stand-ins for the game's dead Firebase functions that it cannot do
+  // without. userSettings/time drives the daily mode rotation; the original
+  // answered with the date as a JSON string.
+  http(req, res, rest) {
+    if (rest === "time" && (req.method === "GET" || req.method === "POST" || req.method === "OPTIONS")) {
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "*",
+        "cache-control": "no-store",
+      });
+      return res.end(req.method === "OPTIONS" ? "" : JSON.stringify(new Date().toUTCString()));
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end('{"error":"not found"}');
+  },
   stats() {
     return { peers: traffic.peers, rooms: registry.count(), players: registry.players(), bytesIn: traffic.bytesIn, bytesOut: traffic.bytesOut };
   },

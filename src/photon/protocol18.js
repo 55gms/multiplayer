@@ -81,6 +81,9 @@ export class Raw {
 // string[] (an Array of strings encodes as object[] otherwise).
 export class StringArray extends Array {}
 
+// bool[] (FindFriends answers with one).
+export class BoolArray extends Array {}
+
 // Number of a Typed, a plain int, or null.
 export function num(v) {
   if (typeof v === "number") return v;
@@ -424,7 +427,7 @@ export class Reader {
         this.skipParams();
         return;
       case T.BooleanArray: {
-        const n = this.length();
+        const n = this.varuint(); // elements, 8 to a byte
         this.bytes(Math.ceil(n / 8));
         return;
       }
@@ -653,6 +656,15 @@ export class Writer {
     if (v instanceof Int32Array) {
       this.byte(T.CompressedIntArray).varuint(v.length);
       for (const n of v) this.varint(n);
+      return this;
+    }
+    if (v instanceof BoolArray) {
+      this.byte(T.BooleanArray).varuint(v.length);
+      for (let i = 0; i < v.length; i += 8) {
+        let b = 0;
+        for (let j = 0; j < 8 && i + j < v.length; j++) if (v[i + j]) b |= 1 << j;
+        this.byte(b);
+      }
       return this;
     }
     if (v instanceof StringArray) {

@@ -48,7 +48,17 @@ case "$action" in
     mkdir -p "$STATE_DIR"
     previous="$(git -C "$APP_DIR" rev-parse HEAD)"
     [ -z "$(git -C "$APP_DIR" status --porcelain)" ] || die "local changes in $APP_DIR"
+    # Any failure from here on (a failed npm ci leaves no node_modules)
+    # puts the previous release back before exiting.
+    restore() {
+      trap - ERR
+      echo "$(date -u +%FT%TZ) $sha failed" >>"$LOG"
+      release "$previous" || true
+      die "deploy of $sha failed; restored $previous"
+    }
+    trap restore ERR
     release "$sha"
+    trap - ERR
     if healthy; then
       echo "$(date -u +%FT%TZ) $sha ok" >>"$LOG"
       echo "deployed $sha"

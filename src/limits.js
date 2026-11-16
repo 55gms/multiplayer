@@ -6,8 +6,10 @@ export const MAX_ROOM_PLAYERS = 16;
 // High because a whole school often shares one public address; each player
 // holds one or two connections at a time.
 export const MAX_CONNECTIONS_PER_IP = 64;
-const RATE_PER_SECOND = 120;
-const RATE_BURST = 240;
+// 1v1.lol's host sets a room property every frame while it waits for an
+// opponent, on top of position updates: a 144 Hz screen needs ~200/s.
+const RATE_PER_SECOND = 400;
+const RATE_BURST = 800;
 
 const perIp = new Map();
 

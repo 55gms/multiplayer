@@ -5,11 +5,11 @@ import { Op, Param, Err, Ev, Cache, Receivers, JoinMode, GameProp, ActorProp } f
 import { Hashtable, Reader, Typed, num } from "../../src/photon/protocol18.js";
 import { encodeEvent } from "../../src/photon/peer.js";
 import { authenticate } from "./nameserver.js";
-import { registry, Actor, RoomFlag, sameValue } from "./rooms.js";
+import { registry, Actor, RoomFlag, sameValue, int, encodedSize, PROPS_MAX_BYTES, CACHE_MAX_BYTES, CACHE_ENTRY_MAX_BYTES } from "./rooms.js";
+import { enteredRoom, leftRoom } from "./presence.js";
 import { applyCreateOptions, describe } from "./master.js";
 import { log } from "../../src/log.js";
 
-const MAX_CACHE = 4000;
 const CREATOR_WAIT_MS = 5000;
 
 function byteKey(key) {
@@ -17,9 +17,9 @@ function byteKey(key) {
 }
 
 function asIntList(v) {
-  if (v instanceof Int32Array) return [...v];
-  if (Array.isArray(v)) return v.map(num).filter((n) => n !== null);
-  const n = num(v);
+  if (v instanceof Int32Array) return [...v].slice(0, 64);
+  if (Array.isArray(v)) return v.slice(0, 64).map((x) => int(x)).filter((n) => n !== null);
+  const n = int(v);
   return n === null ? null : [n];
 }
 
@@ -70,12 +70,15 @@ function enterNow(peer, opCode, params) {
 
   if (opCode === Op.CreateGame) {
     if (room && room.actors.size > 0) return peer.respond(opCode, Err.GameIdAlreadyExists, new Map(), "A game with this name exists");
-    room = room || registry.create(name);
-    if (!room) return peer.respond(opCode, Err.ServerFull, new Map(), "Server full");
+    if (!room) {
+      const made = registry.create(name);
+      if (!made.room) return peer.respond(opCode, Err.ServerFull, new Map(), "Server full");
+      room = made.room;
+    }
     applyCreateOptions(room, params);
   } else {
-    if (!room && num(params.get(Param.JoinMode)) === JoinMode.CreateIfNotExists) {
-      room = registry.create(name);
+    if (!room && int(params.get(Param.JoinMode)) === JoinMode.CreateIfNotExists) {
+      room = registry.create(name).room || null;
       if (room) applyCreateOptions(room, params);
     }
     if (!room) return peer.respond(opCode, Err.GameDoesNotExist, new Map(), "Game does not exist");
@@ -84,7 +87,11 @@ function enterNow(peer, opCode, params) {
     if (!room.hasSpaceFor(userId)) return peer.respond(opCode, Err.GameFull, new Map(), "Game full");
   }
 
-  const actor = new Actor(room.nextActorNr++, peer, params.get(Param.PlayerProperties) instanceof Hashtable ? params.get(Param.PlayerProperties) : null);
+  const joinProps = params.get(Param.PlayerProperties) instanceof Hashtable ? params.get(Param.PlayerProperties) : null;
+  if (joinProps && encodedSize(joinProps) + room.propBytes + room.actorPropBytes() > PROPS_MAX_BYTES) {
+    return peer.respond(opCode, Err.InvalidOperation, new Map(), "Player properties too large");
+  }
+  const actor = new Actor(room.nextActorNr++, peer, joinProps);
   room.reservations.delete(userId);
   room.actors.set(actor.actorNr, actor);
   if (!room.masterActorNr || !room.actors.has(room.masterActorNr)) room.masterActorNr = actor.actorNr;
@@ -96,17 +103,24 @@ function enterNow(peer, opCode, params) {
   const others = new Hashtable();
   for (const other of room.actors.values()) if (other !== actor) others.set(other.actorNr, playerProps(room, other));
 
-  peer.respond(
-    opCode,
-    Err.Ok,
-    new Map([
-      [Param.ActorNr, actor.actorNr],
-      [Param.ActorList, actorList],
-      [Param.PlayerProperties, others],
-      [Param.GameProperties, room.gameProperties()],
-      [Param.RoomOptionFlags, room.flags],
-    ]),
-  );
+  try {
+    peer.respond(
+      opCode,
+      Err.Ok,
+      new Map([
+        [Param.ActorNr, actor.actorNr],
+        [Param.ActorList, actorList],
+        [Param.PlayerProperties, others],
+        [Param.GameProperties, room.gameProperties()],
+        [Param.RoomOptionFlags, room.flags],
+      ]),
+    );
+  } catch (err) {
+    // Never leave a player in a room they were told they could not join.
+    leave(peer, false);
+    throw err;
+  }
+  enteredRoom(userId, room.name);
   log("join_room", { peer: peer.id, room: room.name, actor: actor.actorNr, players: room.actors.size, max: room.maxPlayers, props: describe(room.props) });
 
   // Everyone, the joiner too, gets the Join event; then the joiner gets the cache.
@@ -132,8 +146,9 @@ function leave(peer, sendResponse, opCode) {
   peer.state.room = null;
   peer.state.actor = null;
   room.actors.delete(actor.actorNr);
+  leftRoom(actor.userId, room.name);
 
-  if (room.flags & RoomFlag.DeleteCacheOnLeave) room.cache = room.cache.filter((e) => e.global || e.actorNr !== actor.actorNr);
+  if (room.flags & RoomFlag.DeleteCacheOnLeave) setCache(room, room.cache.filter((e) => e.global || e.actorNr !== actor.actorNr));
 
   if (room.actors.size === 0) {
     registry.remove(room.name);
@@ -176,11 +191,21 @@ function decoded(bytes) {
   }
 }
 
+function entryBytes(e) {
+  return (e.data ? e.data.length : 0) * 2 + 64; // data, plus the encoded event kept for replay
+}
+
+function setCache(room, entries) {
+  room.cache = entries;
+  room.cacheBytes = entries.reduce((n, e) => n + entryBytes(e), 0);
+}
+
 // Does cached data match a RemoveFromRoomCache filter? A Hashtable filter
-// matches data that holds every one of its keys with the same value.
+// matches data that holds every one of its keys with the same value. Data
+// is decoded once, when it is cached.
 function dataMatches(entry, filter) {
   if (filter === null || filter === undefined) return true;
-  const data = decoded(entry.data);
+  const data = entry.value;
   if (filter instanceof Hashtable) {
     if (!(data instanceof Hashtable)) return false;
     for (const [k, v] of filter) if (!data.has(k) || !sameValue(data.get(k), v)) return false;
@@ -194,36 +219,46 @@ function raiseEvent(peer, params, rawParams) {
   const actor = peer.state.actor;
   if (!room || !actor) return;
 
-  const code = num(params.get(Param.Code)) ?? 0;
-  const cache = num(params.get(Param.Cache)) ?? Cache.DoNotCache;
+  const code = int(params.get(Param.Code), 0, 255) ?? 0;
+  const cache = int(params.get(Param.Cache), 0, 255) ?? Cache.DoNotCache;
   const data = rawParams.get(Param.Data) || null;
   const targets = params.has(Param.TargetActorNr) ? asIntList(params.get(Param.TargetActorNr)) : null;
 
   if (cache === Cache.RemoveFromRoomCache) {
     const filter = params.has(Param.Data) ? params.get(Param.Data) : null;
-    room.cache = room.cache.filter((e) => {
-      if (code !== 0 && e.code !== code) return true;
-      if (targets && !targets.includes(e.actorNr)) return true;
-      return !dataMatches(e, filter);
-    });
+    setCache(
+      room,
+      room.cache.filter((e) => {
+        if (code !== 0 && e.code !== code) return true;
+        if (targets && !targets.includes(e.actorNr)) return true;
+        return !dataMatches(e, filter);
+      }),
+    );
     return;
   }
   if (cache === Cache.RemoveFromRoomCacheForActorsLeft) {
-    room.cache = room.cache.filter((e) => e.global || room.actors.has(e.actorNr));
+    setCache(
+      room,
+      room.cache.filter((e) => e.global || room.actors.has(e.actorNr)),
+    );
     return;
   }
   if (cache === Cache.AddToRoomCache || cache === Cache.AddToRoomCacheGlobal) {
-    if (room.cache.length >= MAX_CACHE) {
-      log("cache_full", { room: room.name });
-      room.cache.shift();
+    const entry = { actorNr: actor.actorNr, code, data, value: decoded(data), global: cache === Cache.AddToRoomCacheGlobal, bytes: null };
+    // PUN caches small things (instantiations, buffered RPCs). Anything
+    // past the budget is not a real game: drop the connection.
+    if ((data && data.length > CACHE_ENTRY_MAX_BYTES) || room.cacheBytes + entryBytes(entry) > CACHE_MAX_BYTES) {
+      log("cache_budget_close", { room: room.name, peer: peer.id, ip: peer.ip, cacheBytes: room.cacheBytes });
+      return peer.close();
     }
-    room.cache.push({ actorNr: actor.actorNr, code, data, global: cache === Cache.AddToRoomCacheGlobal, bytes: null });
+    room.cache.push(entry);
+    room.cacheBytes += entryBytes(entry);
   }
 
   const raw = new Map();
   if (data) raw.set(Param.Data, data);
   const bytes = encodeEvent(code, new Map([[Param.ActorNr, actor.actorNr]]), raw);
-  const group = num(params.get(Param.Group)) ?? 0;
+  const group = int(params.get(Param.Group), 0, 255) ?? 0;
   const inGroup = (a) => group === 0 || a.groups.has("all") || a.groups.has(group);
 
   if (targets) {
@@ -233,7 +268,7 @@ function raiseEvent(peer, params, rawParams) {
     }
     return;
   }
-  const receivers = num(params.get(Param.ReceiverGroup)) ?? Receivers.Others;
+  const receivers = int(params.get(Param.ReceiverGroup), 0, 255) ?? Receivers.Others;
   for (const a of room.actors.values()) {
     if (receivers === Receivers.Others && a === actor) continue;
     if (receivers === Receivers.MasterClient && a.actorNr !== room.masterActorNr) continue;
@@ -272,18 +307,27 @@ function setProperties(peer, opCode, params) {
   const props = params.get(Param.Properties);
   if (!(props instanceof Hashtable)) return peer.respond(opCode, Err.InvalidOperation, new Map(), "Properties missing");
   const expected = params.get(Param.ExpectedValues);
-  const targetNr = num(params.get(Param.ActorNr)) ?? 0;
+  const targetNr = int(params.get(Param.ActorNr), 0) ?? 0;
 
   if (targetNr > 0) {
     const target = room.actors.get(targetNr);
     if (!target) return peer.respond(opCode, Err.InvalidOperation, new Map(), "No such player");
     if (!casHolds((k) => target.props.get(k), expected)) return peer.respond(opCode, Err.InvalidOperation, new Map(), "CAS update failed");
+    const next = new Hashtable();
+    for (const [k, v] of target.props) next.set(k, v);
     for (const [k, v] of props) {
-      if (v === null) target.props.delete(k);
-      else target.props.set(k, v);
+      if (v === null) next.delete(k);
+      else next.set(k, v);
     }
+    const nextBytes = encodedSize(next);
+    if (room.propBytes + room.actorPropBytes() - target.propBytes + nextBytes > PROPS_MAX_BYTES) {
+      return peer.respond(opCode, Err.InvalidOperation, new Map(), "Properties too large");
+    }
+    target.props = next;
+    target.propBytes = nextBytes;
   } else {
     if (!casHolds((k) => roomValue(room, k), expected)) return peer.respond(opCode, Err.InvalidOperation, new Map(), "CAS update failed");
+    if (!room.propsFit(props)) return peer.respond(opCode, Err.InvalidOperation, new Map(), "Properties too large");
     room.applyProps(props);
   }
   peer.respond(opCode, Err.Ok);

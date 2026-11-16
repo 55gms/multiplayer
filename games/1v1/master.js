@@ -1,10 +1,11 @@
 // Master server: lobby and matchmaking. Sends players to the game server
 // with a room name; the room itself is played on /game.
 import { Op, Param, Err, Ev, JoinMode } from "../../src/photon/codes.js";
-import { Hashtable, num } from "../../src/photon/protocol18.js";
+import { Hashtable, StringArray, BoolArray, num } from "../../src/photon/protocol18.js";
 import { address } from "./address.js";
 import { authenticate } from "./nameserver.js";
-import { registry } from "./rooms.js";
+import { registry, int } from "./rooms.js";
+import { isOnline, roomOf } from "./presence.js";
 import { log } from "../../src/log.js";
 
 const lobbyPeers = new Set();
@@ -61,22 +62,63 @@ function sendToRoom(peer, opCode, room) {
 // Room settings sent with CreateGame (on the master and again on the game server).
 export function applyCreateOptions(room, params) {
   room.applyProps(params.get(Param.GameProperties));
-  const flags = num(params.get(Param.RoomOptionFlags));
+  const flags = int(params.get(Param.RoomOptionFlags), 0, 0xffff);
   if (flags !== null) room.flags = flags;
   else if (params.get(Param.CleanupCacheOnLeave) === false) room.flags &= ~2;
-  if (typeof params.get(Param.LobbyName) === "string") room.lobbyName = params.get(Param.LobbyName);
-  if (num(params.get(Param.LobbyType)) !== null) room.lobbyType = num(params.get(Param.LobbyType));
+  const lobbyName = params.get(Param.LobbyName);
+  if (typeof lobbyName === "string") room.lobbyName = lobbyName.slice(0, 64);
+  const lobbyType = int(params.get(Param.LobbyType), 0, 255);
+  if (lobbyType !== null) room.lobbyType = lobbyType;
+}
+
+// Rooms are made on the master before anyone is in them. One such room per
+// connection (a new one replaces it) and a few per address, so nobody can
+// fill the room table.
+function createRoom(peer, name) {
+  const previous = peer.state.pendingRoom;
+  if (previous && previous.actors.size === 0 && registry.get(previous.name) === previous) registry.remove(previous.name);
+  peer.state.pendingRoom = null;
+  if (!registry.pendingAllowed(peer.ip)) return { error: "busy" };
+  const made = registry.create(name);
+  if (made.room) {
+    made.room.creatorIp = peer.ip;
+    peer.state.pendingRoom = made.room;
+  }
+  return made;
+}
+
+function createError(peer, opCode, error) {
+  if (error === "taken") return peer.respond(opCode, Err.GameIdAlreadyExists, new Map(), "A game with this name exists");
+  return peer.respond(opCode, Err.ServerFull, new Map(), "Server full");
+}
+
+// FindFriends: are these users online, and in which room. Parties follow
+// their leader into a room by its name.
+function findFriends(peer, opCode, params) {
+  const ids = params.get(1);
+  const list = Array.isArray(ids) ? ids.slice(0, 64) : [];
+  peer.respond(
+    opCode,
+    Err.Ok,
+    new Map([
+      [1, BoolArray.from(list.map((id) => typeof id === "string" && isOnline(id)))],
+      [2, StringArray.from(list.map((id) => (typeof id === "string" ? roomOf(id) : "")))],
+    ]),
+  );
 }
 
 export function masterOp(peer, opCode, params) {
   switch (opCode) {
     case Op.Authenticate:
-    case Op.AuthenticateOnce:
+    case Op.AuthenticateOnce: {
+      const first = !peer.state.authenticated;
       authenticate(peer, opCode, params, "master");
+      if (!first) return;
       lobbyPeers.add(peer);
       peer.once("close", () => lobbyPeers.delete(peer));
       appStats(peer);
       return;
+    }
 
     case Op.JoinLobby: {
       const lobbyName = typeof params.get(Param.LobbyName) === "string" ? params.get(Param.LobbyName) : "";
@@ -97,10 +139,10 @@ export function masterOp(peer, opCode, params) {
       return;
 
     case Op.FindFriends:
-      peer.respond(opCode, Err.Ok);
-      return;
+      return findFriends(peer, opCode, params);
 
     case Op.JoinRandomGame: {
+      if (peer.state.searching) return peer.respond(opCode, Err.OperationNotAllowedInCurrentState, new Map(), "Already searching");
       const expected = params.get(Param.GameProperties);
       const lobbyName = typeof params.get(Param.LobbyName) === "string" ? params.get(Param.LobbyName) : "";
       // Remembered for a CreateGame that follows: PUN creates the room with
@@ -112,6 +154,7 @@ export function masterOp(peer, opCode, params) {
       const key = searchKey(expected, lobbyName, sqlText);
       const find = () => registry.findRandom(expected, peer.state.userId, lobbyName, sql);
       const answer = (room, waited) => {
+        peer.state.searching = false;
         if (peer.closed) return;
         log("join_random", { peer: peer.id, found: room?.name || null, waited, expected: describe(expected), params: paramSummary(params) });
         if (room) return sendToRoom(peer, opCode, room);
@@ -121,6 +164,7 @@ export function masterOp(peer, opCode, params) {
       const room = find();
       if (room || !creatorPending(key, peer)) return answer(room, 0);
       const started = Date.now();
+      peer.state.searching = true;
       const poll = setInterval(() => {
         try {
           const found = find();
@@ -130,6 +174,7 @@ export function masterOp(peer, opCode, params) {
           }
         } catch (err) {
           clearInterval(poll);
+          peer.state.searching = false;
           log("op_error", { role: "master", op: opCode, error: String(err.stack || err) });
           if (!peer.closed) peer.respond(opCode, Err.InternalServerError);
         }
@@ -139,8 +184,9 @@ export function masterOp(peer, opCode, params) {
 
     case Op.CreateGame: {
       creators.delete(peer);
-      const room = registry.create(params.get(Param.RoomName));
-      if (!room) return peer.respond(opCode, Err.GameIdAlreadyExists, new Map(), "A game with this name exists");
+      const made = createRoom(peer, params.get(Param.RoomName));
+      if (!made.room) return createError(peer, opCode, made.error);
+      const room = made.room;
       // Until the creator reaches the game server, the room matches what they
       // searched for, so a player searching meanwhile joins it instead of
       // making a second room.
@@ -156,9 +202,12 @@ export function masterOp(peer, opCode, params) {
     case Op.JoinGame: {
       const name = params.get(Param.RoomName);
       let room = registry.get(name);
-      if (!room && num(params.get(Param.JoinMode)) === JoinMode.CreateIfNotExists) {
-        room = registry.create(name);
-        if (room) applyCreateOptions(room, params);
+      if (!room && int(params.get(Param.JoinMode)) === JoinMode.CreateIfNotExists) {
+        const made = createRoom(peer, name);
+        if (!made.room) return createError(peer, opCode, made.error);
+        room = made.room;
+        applyCreateOptions(room, params);
+        room.creatorUserId = peer.state.userId;
       }
       if (!room) return peer.respond(opCode, Err.GameDoesNotExist, new Map(), "Game does not exist");
       if (!room.isOpen) return peer.respond(opCode, Err.GameClosed, new Map(), "Game closed");

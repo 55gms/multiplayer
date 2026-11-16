@@ -8,6 +8,22 @@ import { MAX_ROOM_PLAYERS } from "../../src/limits.js";
 const RESERVE_MS = 10_000; // a slot handed out by the master, kept until the player arrives
 const EMPTY_ROOM_MS = 20_000; // a room created on the master that nobody joined
 const MAX_ROOMS = 2000;
+const MAX_PENDING_PER_IP = 8; // rooms made on the master that nobody has entered yet
+
+// Memory budgets per room. A PUN game needs a small fraction of these.
+export const PROPS_MAX_BYTES = 64 * 1024; // room and player properties together
+export const CACHE_MAX_BYTES = 1024 * 1024; // the event cache
+export const CACHE_ENTRY_MAX_BYTES = 16 * 1024;
+
+// A whole number in [min, max], or null for anything else (floats, longs, strings).
+export function int(v, min = -0x80000000, max = 0x7fffffff) {
+  const n = typeof v === "number" ? v : v?.type === "byte" || v?.type === "short" ? v.v : null;
+  return Number.isInteger(n) && n >= min && n <= max ? n : null;
+}
+
+export function encodedSize(v) {
+  return new Writer(64).value(v).pos;
+}
 
 // RoomOptionFlags (Param.RoomOptionFlags)
 export const RoomFlag = {
@@ -33,6 +49,7 @@ export class Actor {
     this.actorNr = actorNr;
     this.peer = peer;
     this.props = props || new Hashtable();
+    this.propBytes = encodedSize(this.props);
     this.userId = peer.state.userId || "";
     this.groups = new Set();
   }
@@ -52,7 +69,10 @@ export class Room {
     this.actors = new Map();
     this.nextActorNr = 1;
     this.masterActorNr = 0;
-    this.cache = []; // { actorNr, code, data: Uint8Array | null (encoded value), dataHex }
+    this.cache = []; // { actorNr, code, data: Uint8Array | null (encoded value), value (decoded, for filters), global }
+    this.cacheBytes = 0;
+    this.propBytes = 0; // encoded size of this.props
+    this.creatorIp = null;
     this.reservations = new Map(); // userId -> expiry ms
     this.created = Date.now();
     this.creatorUserId = null; // who made it on the master, until they arrive
@@ -87,17 +107,35 @@ export class Room {
     if (!(table instanceof Hashtable)) return;
     for (const [key, value] of table) {
       const k = typeof key === "object" && key?.type === "byte" ? key.v : null;
-      if (k === GameProp.MaxPlayers) this.maxPlayers = Math.max(0, num(value) ?? 0);
+      if (k === GameProp.MaxPlayers) {
+        const max = int(value, 0, 255);
+        if (max !== null) this.maxPlayers = max;
+      }
       else if (k === GameProp.IsOpen) this.isOpen = value !== false;
       else if (k === GameProp.IsVisible) this.isVisible = value !== false;
       else if (k === GameProp.PropsListedInLobby) this.listed = Array.isArray(value) ? value.filter((s) => typeof s === "string") : null;
       else if (k === GameProp.MasterClientId) {
-        const nr = num(value);
+        const nr = int(value, 1);
         if (nr && this.actors.has(nr)) this.masterActorNr = nr;
       } else if (k === GameProp.PlayerCount || k === GameProp.Removed) continue;
       else if (value === null) this.props.delete(key);
       else this.props.set(key, value);
     }
+    this.propBytes = encodedSize(this.props) + (this.listed ? encodedSize(this.listed) : 0);
+  }
+
+  // Would applying `table` keep the room's properties within budget?
+  propsFit(table) {
+    const trial = new Room("");
+    for (const [k, v] of this.props) trial.props.set(k, v);
+    trial.applyProps(table);
+    return trial.propBytes + this.actorPropBytes() <= PROPS_MAX_BYTES;
+  }
+
+  actorPropBytes() {
+    let n = 0;
+    for (const a of this.actors.values()) n += a.propBytes;
+    return n;
   }
 
   // The room's properties as clients see them in the room.
@@ -153,14 +191,25 @@ class Registry {
     return this.rooms.get(name) || null;
   }
 
-  // null when the name is taken or the server is full.
+  // { room } or { error: "full" | "taken" }.
   create(name) {
-    if (this.rooms.size >= MAX_ROOMS) return null;
+    if (this.rooms.size >= MAX_ROOMS) return { error: "full" };
     const roomName = typeof name === "string" && name ? name.slice(0, 128) : randomUUID();
-    if (this.rooms.has(roomName)) return null;
+    if (this.rooms.has(roomName)) return { error: "taken" };
     const room = new Room(roomName);
     this.rooms.set(roomName, room);
-    return room;
+    return { room };
+  }
+
+  // Rooms an address made on the master that nobody has entered yet.
+  pendingFor(ip) {
+    let n = 0;
+    for (const r of this.rooms.values()) if (r.creatorIp === ip && r.actors.size === 0) n++;
+    return n;
+  }
+
+  pendingAllowed(ip) {
+    return this.pendingFor(ip) < MAX_PENDING_PER_IP;
   }
 
   remove(name) {

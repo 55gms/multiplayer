@@ -20,11 +20,16 @@ function searchKey(expected, lobbyName, sqlText) {
   return `${lobbyName}|${sqlText || ""}|${expected instanceof Hashtable ? describe(expected) : ""}`;
 }
 
-function creatorPending(key, self) {
+// A ranked player who waits in a room never searches again, so two ranked
+// searches wait longer for each other's room: a slow client can take
+// seconds between a failed search and creating its room.
+const RANKED_CREATOR_WAIT_MS = 12000;
+
+function creatorPending(key, self, waitMs = CREATOR_WAIT_MS) {
   const now = Date.now();
   for (const [peer, c] of creators) {
-    if (now - c.at > CREATOR_WAIT_MS || peer.closed) creators.delete(peer);
-    else if (peer !== self && c.key === key) return true;
+    if (now - c.at > RANKED_CREATOR_WAIT_MS || peer.closed) creators.delete(peer);
+    else if (peer !== self && c.key === key && now - c.at <= waitMs) return true;
   }
   return false;
 }
@@ -206,14 +211,15 @@ export function masterOp(peer, opCode, params) {
         creators.set(peer, { key, at: Date.now() });
         peer.respond(opCode, Err.NoRandomMatchFound, new Map(), "No match found");
       };
+      const waitMs = ranked ? RANKED_CREATOR_WAIT_MS : CREATOR_WAIT_MS;
       const room = find();
-      if (room || !creatorPending(key, peer)) return answer(room, 0);
+      if (room || !creatorPending(key, peer, waitMs)) return answer(room, 0);
       const started = Date.now();
       peer.state.searching = true;
       const poll = setInterval(() => {
         try {
           const found = find();
-          if (found || peer.closed || Date.now() - started > CREATOR_WAIT_MS || !creatorPending(key, peer)) {
+          if (found || peer.closed || Date.now() - started > waitMs || !creatorPending(key, peer, waitMs)) {
             clearInterval(poll);
             answer(found, Date.now() - started);
           }

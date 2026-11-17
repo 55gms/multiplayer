@@ -58,10 +58,15 @@ So the result can be read from two streams that have to agree:
 
 A player who leaves before `gameOver` has left a match in progress.
 
+In competitive modes the game also sets a room property
+`USERID_<Photon user id>` to the 55GMS account uuid for each player, and its
+ranked search filter is `<rating> >= C1 AND <rating> <= C2` with the room's
+range in `C1`/`C2` (see `master.js`: the server does not use it).
+
 ## Modes
 
 | Mode                                                                                                            | Readable                                                                                                     | Winner                                                                                                                                                  |
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `1v1`                                                                                                           | yes, recorded                                                                                                | the player not named dead in a `PlayerDied` from the dead player's own stream, backed by that player's `TakeHit`s from the killer; time out = no winner |
-| `1v1_Competitive`                                                                                               | assumed the same rules as `1v1` (same game code, one life); to be confirmed with two signed-in players       | as `1v1`                                                                                                                                                |
+| `1v1_Competitive` | yes: a live ranked match sent the same room properties (`gameStarted`, `gameOver`) and RPCs; its kill path was checked by replaying the recorded `1v1` messages | as `1v1` |
 | `Teams_2v2_Competitive`, `BoxFight_Teams_2v2`, `Teams_City_ZoneWars`, `PipeRun_Race`, custom and practice modes | not recorded (four headless players are too slow on this machine); rounds, respawns and team scoring unknown | treated as unreadable: no XP, stats, rating or battle pass progress, and `Teams_2v2_Competitive` is left out of the competitive list                    |

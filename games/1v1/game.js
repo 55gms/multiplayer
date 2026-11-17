@@ -10,6 +10,7 @@ import { enteredRoom, leftRoom } from "./presence.js";
 import { withName } from "./names.js";
 import { applyCreateOptions, describe } from "./master.js";
 import { log } from "../../src/log.js";
+import * as referee from "./referee.js";
 
 const CREATOR_WAIT_MS = 5000;
 
@@ -126,6 +127,7 @@ function enterNow(peer, opCode, params) {
     throw err;
   }
   enteredRoom(userId, room.name);
+  referee.onJoin(room, actor);
   log("join_room", { peer: peer.id, room: room.name, actor: actor.actorNr, name: peer.state.name, players: room.actors.size, max: room.maxPlayers, props: describe(room.props) });
 
   // Everyone, the joiner too, gets the Join event; then the joiner gets the cache.
@@ -150,6 +152,7 @@ function leave(peer, sendResponse, opCode) {
   if (!room || !actor) return;
   peer.state.room = null;
   peer.state.actor = null;
+  referee.onLeave(room, actor);
   room.actors.delete(actor.actorNr);
   leftRoom(actor.userId, room.name);
 
@@ -260,6 +263,8 @@ function raiseEvent(peer, params, rawParams) {
     room.cacheBytes += entryBytes(entry);
   }
 
+  referee.onEvent(room, actor, code, params.get(Param.Data));
+
   const raw = new Map();
   if (data) raw.set(Param.Data, data);
   const bytes = encodeEvent(code, new Map([[Param.ActorNr, actor.actorNr]]), raw);
@@ -337,6 +342,7 @@ function setProperties(peer, opCode, params) {
     if (!casHolds((k) => roomValue(room, k), expected)) return peer.respond(opCode, Err.InvalidOperation, new Map(), "CAS update failed");
     if (!room.propsFit(props)) return peer.respond(opCode, Err.InvalidOperation, new Map(), "Properties too large");
     room.applyProps(props);
+    referee.onRoomProps(room, actor, props);
   }
   peer.respond(opCode, Err.Ok);
 

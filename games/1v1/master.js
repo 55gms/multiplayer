@@ -61,7 +61,7 @@ function gameList(lobbyName) {
 // to its rating instead; ratings come from 55GMS and change only by the
 // results it applies.
 const RANKED = /_Competitive$/;
-const DEFAULT_RATING = 1000;
+const DEFAULT_RATING = 0; // as 55GMS: unranked players start at 0
 
 function ratingFor(peer, mode) {
   const value = peer.state.account?.ratings?.[mode];

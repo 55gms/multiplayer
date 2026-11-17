@@ -68,6 +68,10 @@ function enterNow(peer, opCode, params) {
   const name = params.get(Param.RoomName);
   const userId = peer.state.userId;
   let room = registry.get(name);
+  // Ranked rooms are for the accounts the master sent there (master.js).
+  if (room?.ranked && !(peer.state.account && room.reservations.has(userId)) && ![...room.actors.values()].some((a) => a.userId === userId)) {
+    return peer.respond(opCode, Err.GameClosed, new Map(), "Ranked match");
+  }
 
   if (opCode === Op.CreateGame) {
     if (room && room.actors.size > 0) return peer.respond(opCode, Err.GameIdAlreadyExists, new Map(), "A game with this name exists");

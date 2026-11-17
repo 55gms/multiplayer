@@ -8,6 +8,7 @@ import { masterOp } from "./master.js";
 import { gameOp } from "./game.js";
 import { registry } from "./rooms.js";
 import { paramSummary } from "./master.js";
+import { queueSize } from "./accounts.js";
 
 const DEBUG = process.env.MP_DEBUG === "1";
 
@@ -70,6 +71,6 @@ export default {
     res.end('{"error":"not found"}');
   },
   stats() {
-    return { peers: traffic.peers, rooms: registry.count(), players: registry.players(), bytesIn: traffic.bytesIn, bytesOut: traffic.bytesOut };
+    return { peers: traffic.peers, rooms: registry.count(), players: registry.players(), bytesIn: traffic.bytesIn, bytesOut: traffic.bytesOut, resultsQueued: queueSize() };
   },
 };

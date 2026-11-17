@@ -8,6 +8,7 @@ import { address } from "./address.js";
 import { connected } from "./presence.js";
 import { playerName } from "./names.js";
 import { log } from "../../src/log.js";
+import { verifyToken } from "./accounts.js";
 
 export const REGION = "eu";
 const TOKEN_MS = 12 * 60 * 60 * 1000;
@@ -57,15 +58,35 @@ function readToken(token) {
 
 // Authenticate is answered the same way on every role: who you are, and a
 // token. Any AppId and version is accepted. Once per connection.
+//
+// A connection with ?gms=<55GMS game token> is that account's (accounts.js):
+// its user id is "gms:<uuid>" and its name the handle. Nobody else can take
+// a "gms:" user id, whatever they ask for.
 export function authenticate(peer, opCode, params, role) {
-  if (peer.state.authenticated) {
+  if (peer.state.authenticated || peer.state.authenticating) {
     return peer.respond(opCode, Err.OperationNotAllowedInCurrentState, new Map(), "Already authenticated");
   }
+  peer.state.authenticating = true;
+  const gms = peer.query.get("gms");
+  const lookup = gms ? verifyToken(gms) : Promise.resolve(null);
+  lookup.then((account) => {
+    peer.state.authenticating = false;
+    if (peer.closed) return;
+    finishAuthenticate(peer, opCode, params, role, account);
+  });
+}
+
+function finishAuthenticate(peer, opCode, params, role, account) {
   const known = readToken(params.get(Param.Token));
   const asked = params.get(Param.UserId);
-  const userId = known || (typeof asked === "string" && asked ? asked.slice(0, 64) : randomUUID());
+  let userId;
+  if (account) userId = `gms:${account.uuid}`;
+  else if (known && !known.startsWith("gms:")) userId = known;
+  else if (typeof asked === "string" && asked && !asked.startsWith("gms:")) userId = asked.slice(0, 64);
+  else userId = randomUUID();
   peer.state.userId = userId;
-  peer.state.name = playerName(peer.query.get("name"));
+  peer.state.account = account;
+  peer.state.name = account ? playerName(account.handle) : playerName(peer.query.get("name"));
   peer.state.authenticated = true;
   if (role !== "ns") connected(peer);
   const out = new Map([

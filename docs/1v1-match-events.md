@@ -50,11 +50,17 @@ UpdateAllPartyUI.
 With nobody dead, the round runs out after three minutes ("Time's Up!") and
 nobody wins.
 
-So the result can be read from two streams that have to agree:
+So the result is read like this (`games/1v1/referee.js`):
 
-- the dead player's own `PlayerDied` naming itself as dead (one player cannot
-  make another's client say it died), and
-- the killer's `TakeHit` RPCs on the dead player's view before it.
+- the dead player's own `PlayerDied` naming itself as dead is its loss (one
+  player cannot make another's client say it died);
+- the killer is credited with the kill only if it hit the dead player's view
+  in the 15 s before, and a hit counts only if the shooter sent `ShotOccured`
+  in the 2 s before it;
+- more than 15 hits a second from one shooter voids the match;
+- `gameOver` with nobody dead counts as a draw only once most of the
+  3-minute round has run (170 s); earlier, a client ended it and the match
+  counts for nobody.
 
 A player who leaves before `gameOver` has left a match in progress.
 

@@ -8,7 +8,7 @@ import { log } from "../../src/log.js";
 const GMS = (process.env.GMS_INTERNAL_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
 const SECRET = process.env.MP_SHARED_SECRET || "";
 const VERIFY_MS = 2000;
-const CACHE_MS = 5 * 60 * 1000;
+const CACHE_MS = 60 * 1000;
 const QUEUE_MAX = 500;
 
 export const accountsEnabled = SECRET.length >= 16;

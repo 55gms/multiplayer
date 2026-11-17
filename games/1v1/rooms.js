@@ -40,6 +40,15 @@ function encoded(v) {
 }
 
 // Photon compares property values by type and value.
+// A room property against a lobby filter value: "=" any type, "<=" / ">="
+// numbers only.
+function compare(value, op, want) {
+  if (op === "=") return sameValue(value, want);
+  const n = typeof value === "object" && value !== null && "v" in value ? Number(value.v) : Number(value);
+  if (!Number.isFinite(n)) return false;
+  return op === "<=" ? n <= want : n >= want;
+}
+
 export function sameValue(a, b) {
   return encoded(a) === encoded(b);
 }
@@ -217,17 +226,41 @@ class Registry {
   }
 
   // The oldest open, visible room with space whose properties match.
-  findRandom(expected, userId, lobbyName = "", sql = null) {
+  findRandom(expected, userId, lobbyName = "", sql = null, accept = null) {
     for (const room of this.rooms.values()) {
       if (!room.isOpen || !room.isVisible) continue;
+      if (accept && !accept(room)) continue;
       if ((room.lobbyName || "") !== (lobbyName || "")) continue;
       if (room.actors.size === 0 && room.liveReservations() === 0) continue;
       if (!room.hasSpaceFor(userId)) continue;
       if (!room.matches(expected)) continue;
-      if (sql && !sql.every(([k, v]) => room.props.has(k) && sameValue(room.props.get(k), v))) continue;
+      // A range a room's creator has not set yet (they are still on their
+      // way to it) does not keep a searcher out.
+      if (sql && !sql.every(([k, v, op = "="]) => (room.props.has(k) ? compare(room.props.get(k), op, v) : op !== "=" && room.actors.size === 0))) continue;
       return room;
     }
     return null;
+  }
+
+  // The open ranked room whose creator's rating is closest to `rating`.
+  closestRanked(expected, userId, lobbyName, sql, rating) {
+    let best = null;
+    for (const room of this.rooms.values()) {
+      if (!room.ranked) continue;
+      if (this.findRandom(expected, userId, lobbyName, sql, (r) => r === room) !== room) continue;
+      if (!best || Math.abs(room.creatorRating - rating) < Math.abs(best.creatorRating - rating)) best = room;
+    }
+    return best;
+  }
+
+  // Whether this user is in, or on the way to, a ranked room.
+  inRankedRoom(userId) {
+    for (const room of this.rooms.values()) {
+      if (!room.ranked) continue;
+      if ((room.reservations.get(userId) || 0) >= Date.now()) return true;
+      for (const actor of room.actors.values()) if (actor.userId === userId) return true;
+    }
+    return false;
   }
 
   visibleRooms(lobbyName = "") {

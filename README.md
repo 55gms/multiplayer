@@ -14,12 +14,14 @@ node .                # PORT (default 8093), HOST (default 0.0.0.0)
 MP_DEBUG=1 node .     # also log every operation with its parameters
 ```
 
+55GMS accounts need `MP_SHARED_SECRET`, the same long random string as in 55GMS's `.env`, and reach 55GMS at `GMS_INTERNAL_URL` (default `http://127.0.0.1:8080`). Without the secret everyone is a guest and no results are kept.
+
 ## Layout
 
 - `src/server.js` routes `/api/mp/<game>/<rest>` (HTTP and websocket upgrades) to `games/<game>/index.js`
 - `src/limits.js` caps: 64 KiB per message, 120 messages/s per connection, 64 connections per IP, 60 s idle, 16 players per room
 - `src/photon/` the Photon layer any Photon game can reuse: `protocol18.js` (value codec), `codes.js` (operation, parameter and event codes), `peer.js` (framing, ping, limits)
-- `games/1v1/` the three Photon roles over one in-memory room registry (`rooms.js`)
+- `games/1v1/` the three Photon roles over one in-memory room registry (`rooms.js`), 55GMS accounts (`accounts.js`) and the match referee (`referee.js`)
 
 ## 1v1.lol
 
@@ -30,7 +32,10 @@ What the game does, and what the server answers:
 - Name server: `GetRegions` gets one region whose address is our master; the HTTP region pings (`https://<host>/photon/m/?ping`) fail and the client carries on. `Authenticate` accepts anything and returns a token; the token maps back to the user id on the master and game servers.
 - Master: PLAY sends `JoinRandomGame` in the SQL lobby `1v1Lobby` with `C0 = '<mode>'` and `MaxPlayers` 2 (or the mode's size). No match → `CreateGame`; the new room takes the searched properties and lobby at once, so players pressing PLAY together land in the same room. A search that fails while someone is creating the same room waits up to 1.5 s for it, and a player who reaches the room before its creator waits up to 5 s.
 - Game server: rooms, actors, room and player properties (CAS, `BroadcastPropsChangeToAll`), `RaiseEvent` relay with receivers, targets, interest groups and the room event cache (PUN instantiation and buffered RPCs), master client handover on leave. A room is removed when its last player leaves.
-- Not supported: Google login, the shop, LOL Pass, friends and parties (Firebase and Photon Chat).
+- Signed-in players: the 55GMS page adds the account's game token as `?gms=`; `Authenticate` asks 55GMS whose it is (`games/1v1/accounts.js`) and gives the player the user id `gms:<uuid>` and their handle as name. Nobody else can take a `gms:` user id. Without the token, or with 55GMS unreachable, the player is a guest.
+- Ranked (`…_Competitive` modes): accounts only, one ranked room each. A ranked search joins the waiting ranked room closest to its 55GMS rating; the game's own `C1`/`C2` range filter is ignored (it overflows, never widens, and a waiting player never searches again). Two ranked players searching together wait up to 12 s for each other's room.
+- Results: `games/1v1/referee.js` reads each `1v1` and `1v1_Competitive` match from the relayed messages and posts the result to 55GMS, which keeps ratings, XP, stats and the battle pass. See `docs/1v1-match-events.md` for what it reads and why it can be trusted. Results wait in memory and are retried while 55GMS is unreachable; 55GMS applies each match id once.
+- Not supported: friends and parties (Photon Chat). Accounts, the shop and LOL Pass are 55GMS's (`docs/1v1-backend.md` there).
 
 `tools/capture.mjs` opens the game in headless Chromium and logs every Photon message, which is how the above was worked out: `CHROME_PATH=… node tools/capture.mjs http://localhost:8080/misc/nowgg/ --pages 2 --mp ws://localhost:8093/api/mp --click 1075,620@60 --size 640x360`. Software rendering is slow; two players on a small VM take long enough loading a map that the game may give up.
 
@@ -45,6 +50,7 @@ git clone https://github.com/55gms/multiplayer /root/multiplayer
 cd /root/multiplayer && npm ci --omit=dev
 mkdir -p /root/deploy-mp && install -m 755 deploy/entry.sh /root/deploy-mp/entry.sh
 install -m 644 deploy/gms-multiplayer.service /etc/systemd/system/
+printf 'MP_SHARED_SECRET=%s\n' '<the value in /root/55gms/.env>' > /etc/gms-multiplayer.env && chmod 600 /etc/gms-multiplayer.env
 systemctl daemon-reload && systemctl enable --now gms-multiplayer
 curl -s 127.0.0.1:8093/api/mp/health
 ```

@@ -20,11 +20,16 @@ function searchKey(expected, lobbyName, sqlText) {
   return `${lobbyName}|${sqlText || ""}|${expected instanceof Hashtable ? describe(expected) : ""}`;
 }
 
-function creatorPending(key, self) {
+// A ranked player who waits in a room never searches again, so two ranked
+// searches wait longer for each other's room: a slow client can take
+// seconds between a failed search and creating its room.
+const RANKED_CREATOR_WAIT_MS = 12000;
+
+function creatorPending(key, self, waitMs = CREATOR_WAIT_MS) {
   const now = Date.now();
   for (const [peer, c] of creators) {
-    if (now - c.at > CREATOR_WAIT_MS || peer.closed) creators.delete(peer);
-    else if (peer !== self && c.key === key) return true;
+    if (now - c.at > RANKED_CREATOR_WAIT_MS || peer.closed) creators.delete(peer);
+    else if (peer !== self && c.key === key && now - c.at <= waitMs) return true;
   }
   return false;
 }
@@ -45,6 +50,36 @@ function gameList(lobbyName) {
   const list = new Hashtable();
   for (const room of registry.visibleRooms(lobbyName)) list.set(room.name, room.lobbyProperties());
   return list;
+}
+
+// --- ranked -------------------------------------------------------------
+// Competitive modes ("…_Competitive") are for 55GMS accounts only, one ranked
+// room at a time. The game's own rating range (its "N >= C1 AND N <= C2"
+// filter) is not used: this build never widens it properly and a waiting
+// player never searches again, so a refused searcher would wait forever in
+// a room of its own. A ranked search joins the waiting ranked room closest
+// to its rating instead; ratings come from 55GMS and change only by the
+// results it applies.
+const RANKED = /_Competitive$/;
+const DEFAULT_RATING = 1000;
+
+function ratingFor(peer, mode) {
+  const value = peer.state.account?.ratings?.[mode];
+  return typeof value === "number" ? value : DEFAULT_RATING;
+}
+
+function modeOf(expected, sql) {
+  const fromSql = sql?.find(([k, , op]) => k === "C0" && op === "=")?.[1];
+  if (typeof fromSql === "string") return fromSql;
+  const fromProps = expected instanceof Hashtable ? expected.get("C0") : null;
+  return typeof fromProps === "string" ? fromProps : null;
+}
+
+// Why this peer may not enter a ranked room for `mode`, or null.
+function rankedRefusal(peer) {
+  if (!peer.state.account) return "Sign in to 55GMS to play ranked";
+  if (registry.inRankedRoom(peer.state.userId)) return "Already in a ranked match";
+  return null;
 }
 
 function sendToRoom(peer, opCode, room) {
@@ -151,8 +186,23 @@ export function masterOp(peer, opCode, params) {
       peer.state.lobby = lobbyName;
       const sqlText = typeof params.get(Param.Data) === "string" ? params.get(Param.Data) : null;
       const sql = sqlText ? parseSqlFilter(sqlText) : null;
-      const key = searchKey(expected, lobbyName, sqlText);
-      const find = () => registry.findRandom(expected, peer.state.userId, lobbyName, sql);
+      const mode = modeOf(expected, sql);
+      const ranked = Boolean(mode && RANKED.test(mode));
+      // Ranked searches differ by rating, and a waiting 1v1.lol player never
+      // searches again, so two pressing PLAY together must still meet: they
+      // wait for each other by mode alone.
+      const key = ranked ? `ranked|${lobbyName}|${mode}` : searchKey(expected, lobbyName, sqlText);
+      if (ranked) {
+        const refusal = rankedRefusal(peer);
+        if (refusal) return peer.respond(opCode, Err.OperationNotAllowedInCurrentState, new Map(), refusal);
+      }
+      const accept = (room) => Boolean(room.ranked) === ranked;
+      const myRating = ranked ? ratingFor(peer, mode) : 0;
+      const filter = ranked && sql ? sql.filter(([, , op]) => op === "=") : sql;
+      const find = () =>
+        ranked
+          ? registry.closestRanked(expected, peer.state.userId, lobbyName, filter, myRating)
+          : registry.findRandom(expected, peer.state.userId, lobbyName, sql, accept);
       const answer = (room, waited) => {
         peer.state.searching = false;
         if (peer.closed) return;
@@ -161,14 +211,15 @@ export function masterOp(peer, opCode, params) {
         creators.set(peer, { key, at: Date.now() });
         peer.respond(opCode, Err.NoRandomMatchFound, new Map(), "No match found");
       };
+      const waitMs = ranked ? RANKED_CREATOR_WAIT_MS : CREATOR_WAIT_MS;
       const room = find();
-      if (room || !creatorPending(key, peer)) return answer(room, 0);
+      if (room || !creatorPending(key, peer, waitMs)) return answer(room, 0);
       const started = Date.now();
       peer.state.searching = true;
       const poll = setInterval(() => {
         try {
           const found = find();
-          if (found || peer.closed || Date.now() - started > CREATOR_WAIT_MS || !creatorPending(key, peer)) {
+          if (found || peer.closed || Date.now() - started > waitMs || !creatorPending(key, peer, waitMs)) {
             clearInterval(poll);
             answer(found, Date.now() - started);
           }
@@ -184,9 +235,21 @@ export function masterOp(peer, opCode, params) {
 
     case Op.CreateGame: {
       creators.delete(peer);
+      const props = params.get(Param.GameProperties) instanceof Hashtable ? params.get(Param.GameProperties) : peer.state.lastExpected;
+      const mode = modeOf(props, null);
+      const ranked = Boolean(mode && RANKED.test(mode));
+      if (ranked) {
+        const refusal = rankedRefusal(peer);
+        if (refusal) return peer.respond(opCode, Err.OperationNotAllowedInCurrentState, new Map(), refusal);
+      }
       const made = createRoom(peer, params.get(Param.RoomName));
       if (!made.room) return createError(peer, opCode, made.error);
       const room = made.room;
+      if (ranked) {
+        room.ranked = true;
+        room.mode = mode;
+        room.creatorRating = ratingFor(peer, mode);
+      }
       // Until the creator reaches the game server, the room matches what they
       // searched for, so a player searching meanwhile joins it instead of
       // making a second room.
@@ -210,6 +273,10 @@ export function masterOp(peer, opCode, params) {
         room.creatorUserId = peer.state.userId;
       }
       if (!room) return peer.respond(opCode, Err.GameDoesNotExist, new Map(), "Game does not exist");
+      if (room.ranked) {
+        const refusal = rankedRefusal(peer);
+        if (refusal) return peer.respond(opCode, Err.OperationNotAllowedInCurrentState, new Map(), refusal);
+      }
       if (!room.isOpen) return peer.respond(opCode, Err.GameClosed, new Map(), "Game closed");
       if (!room.hasSpaceFor(peer.state.userId)) return peer.respond(opCode, Err.GameFull, new Map(), "Game full");
       return sendToRoom(peer, opCode, room);
@@ -245,9 +312,25 @@ export function paramSummary(params) {
 export function parseSqlFilter(sql) {
   const out = [];
   for (const part of sql.split(/\s+AND\s+/i)) {
-    const m = part.trim().match(/^\(?\s*(C\d)\s*=\s*(?:'((?:[^']|'')*)'|(-?\d+))\s*\)?$/i);
-    if (!m) return null;
-    out.push([m[1].toUpperCase(), m[2] !== undefined ? m[2].replace(/''/g, "'") : Number(m[3])]);
+    const text = part.trim().replace(/^\(\s*/, "").replace(/\s*\)$/, "");
+    const eq = text.match(/^(C\d)\s*=\s*(?:'((?:[^']|'')*)'|(-?\d+))$/i);
+    if (eq) {
+      out.push([eq[1].toUpperCase(), eq[2] !== undefined ? eq[2].replace(/''/g, "'") : Number(eq[3]), "="]);
+      continue;
+    }
+    // Ranked searches: "<rating> >= C1 AND <rating> <= C2", the waiting
+    // room's range (its creator widens it while it waits).
+    const left = text.match(/^(-?\d+(?:\.\d+)?)\s*(>=|<=)\s*(C\d)$/i);
+    if (left) {
+      out.push([left[3].toUpperCase(), Number(left[1]), left[2] === ">=" ? "<=" : ">="]);
+      continue;
+    }
+    const right = text.match(/^(C\d)\s*(>=|<=)\s*(-?\d+(?:\.\d+)?)$/i);
+    if (right) {
+      out.push([right[1].toUpperCase(), Number(right[3]), right[2]]);
+      continue;
+    }
+    return null;
   }
   return out;
 }

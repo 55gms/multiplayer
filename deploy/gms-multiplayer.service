@@ -9,6 +9,8 @@ Environment=PORT=8093
 Environment=HOST=127.0.0.1
 Environment=NODE_ENV=production
 Environment=HOME=/root
+# MP_SHARED_SECRET (the same value as 55GMS's) for 55GMS accounts in 1v1.lol.
+EnvironmentFile=-/etc/gms-multiplayer.env
 # Node comes from nvm on the server; this resolves its current default.
 ExecStart=/bin/bash -c '. /root/.nvm/nvm.sh >/dev/null 2>&1; exec node index.js'
 Restart=always

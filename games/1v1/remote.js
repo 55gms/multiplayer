@@ -12,12 +12,14 @@
 //   that address frame for frame. Only the first Authenticate is rewritten,
 //   to carry the other server's token and user id instead of ours.
 // - names: there, our player is called REMOTE.name ("55gms.com"); here, every
-//   other player in the room is called REMOTE.opponentName ("bob"), and the
+//   other player in the room gets a random name from opponent-names.txt (the
+//   same one for the whole connection), and the
 //   player keeps their own name on their own screen.
 //
 // Ranked stays here (accounts only, results kept by 55GMS); matches played
 // there are not refereed, so they give no 55GMS XP.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
+import fs from "node:fs";
 import WebSocket, { WebSocketServer } from "ws";
 import { Reader, Writer, Hashtable, byte } from "../../src/photon/protocol18.js";
 import { MsgType, Op, Param, Err, Ev, ActorProp } from "../../src/photon/codes.js";
@@ -48,7 +50,6 @@ export const REMOTE = {
   host: URL_?.host || null,
   name: (process.env.MP_1V1_REMOTE_NAME || "55gms.com").slice(0, 32),
   region: process.env.MP_1V1_REMOTE_REGION || "us",
-  opponentName: (process.env.MP_1V1_REMOTE_OPPONENT_NAME || "bob").slice(0, 32),
 };
 
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -247,6 +248,35 @@ export async function openRemoteMaster(peer) {
 
 const NAME_KEY = byte(ActorProp.PlayerName);
 
+// Names for the other server's players, from opponent-names.txt.
+const OPPONENT_NAMES = (() => {
+  try {
+    const list = fs
+      .readFileSync(new URL("./opponent-names.txt", import.meta.url), "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"))
+      .map((line) => line.slice(0, 16));
+    if (list.length) return list;
+  } catch (err) {
+    log("opponent_names_missing", { error: String(err.message || err) });
+  }
+  return ["Player"];
+})();
+
+// One name per other player for the whole connection, none used twice while
+// the list lasts.
+function opponentName(names, actorNr) {
+  let name = names.opponents.get(actorNr);
+  if (name) return name;
+  const used = new Set(names.opponents.values());
+  const free = OPPONENT_NAMES.filter((n) => !used.has(n));
+  const pool = free.length ? free : OPPONENT_NAMES;
+  name = pool[randomInt(pool.length)];
+  names.opponents.set(actorNr, name);
+  return name;
+}
+
 // A copy of a player's properties with the name set to `name`; null when
 // they carry no name.
 function renamed(props, name) {
@@ -282,11 +312,11 @@ function nameOut(buf, names) {
   return out ? rebuild(buf, MsgType.Operation, op, 3, new Map([[key, out]])) : buf;
 }
 
-// Names on the way in: the player's own back to theirs, everyone else's REMOTE.opponentName.
+// Names on the way in: the player's own back to theirs, everyone else's a random one.
 function nameIn(buf, names) {
   if (buf.length < 4) return buf;
   const type = buf[1];
-  const nameFor = (actorNr) => (actorNr === names.actorNr ? names.own : REMOTE.opponentName);
+  const nameFor = (actorNr) => (actorNr === names.actorNr ? names.own : opponentName(names, actorNr));
   if (type === MsgType.OperationResponse && (buf[2] === Op.JoinGame || buf[2] === Op.CreateGame || buf[2] === Op.JoinRandomGame)) {
     const r = new Reader(buf, 5);
     const debug = r.value();
@@ -341,7 +371,7 @@ function relay(client, t, ip) {
   let alive = true;
   let done = false;
   let authed = false;
-  const names = { own: null, actorNr: null };
+  const names = { own: null, actorNr: null, opponents: new Map() };
   const upstream = connect(t.address);
   remoteStats.games++;
 

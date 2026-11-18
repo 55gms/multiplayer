@@ -16,8 +16,10 @@
 //   same one for the whole connection), and the
 //   player keeps their own name on their own screen.
 //
-// Ranked stays here (accounts only, results kept by 55GMS); matches played
-// there are not refereed, so they give no 55GMS XP.
+// Ranked stays here (accounts only, results kept by 55GMS). Casual 1v1
+// matches played there are refereed from what the relay passes through
+// (remote-referee.js), so a signed-in player still gets XP, stats and battle
+// pass progress for them; they are never rated.
 import { randomBytes, randomInt } from "node:crypto";
 import fs from "node:fs";
 import WebSocket, { WebSocketServer } from "ws";
@@ -26,6 +28,7 @@ import { MsgType, Op, Param, Err, Ev, ActorProp } from "../../src/photon/codes.j
 import { acceptConnection, clientIp, rateLimiter, MAX_MESSAGE_BYTES } from "../../src/limits.js";
 import { address } from "./address.js";
 import { log } from "../../src/log.js";
+import { remoteReferee } from "./remote-referee.js";
 
 const MAGIC = 0xf3;
 const SUBPROTOCOL = "GpBinaryV18";
@@ -130,7 +133,7 @@ function ask(ws, opCode, params) {
 
 // --- tickets: a game server address and the login it needs --------------
 
-const tickets = new Map(); // id -> { address, token, userId, at }
+const tickets = new Map(); // id -> { address, token, userId, account, at }
 
 function issueTicket(entry) {
   const now = Date.now();
@@ -224,7 +227,7 @@ export async function openRemoteMaster(peer) {
       log("remote_bad_address", { peer: peer.id, op: res.opCode });
       return peer.respond(res.opCode, Err.InternalServerError);
     }
-    const id = issueTicket({ address: gameAddress, token: state.token, userId: state.userId });
+    const id = issueTicket({ address: gameAddress, token: state.token, userId: state.userId, account: peer.state.account || null });
     res.raw.delete(Param.Address);
     log("remote_room", { peer: peer.id, op: res.opCode, room: res.params.get(Param.RoomName) });
     peer.respond(res.opCode, res.rc, new Map([[Param.Address, `${address(peer, "remote")}?ticket=${id}`]]), res.debug, res.raw);
@@ -372,6 +375,7 @@ function relay(client, t, ip) {
   let done = false;
   let authed = false;
   const names = { own: null, actorNr: null, opponents: new Map() };
+  const watch = remoteReferee(t.account);
   const upstream = connect(t.address);
   remoteStats.games++;
 
@@ -387,6 +391,7 @@ function relay(client, t, ip) {
   function end() {
     if (done) return;
     done = true;
+    watch?.end();
     relays.delete(entry);
     remoteStats.games--;
     for (const ws of [client, upstream]) {
@@ -410,6 +415,7 @@ function relay(client, t, ip) {
         buf = rewritten;
       }
     }
+    watch?.out(buf);
     forward(upstream, rename(nameOut, buf, names));
   }
 
@@ -429,7 +435,11 @@ function relay(client, t, ip) {
   upstream.on("open", () => {
     for (const data of pending.splice(0)) fromClient(data);
   });
-  upstream.on("message", (data) => forward(client, rename(nameIn, toBuffer(data), names)));
+  upstream.on("message", (data) => {
+    const buf = toBuffer(data);
+    watch?.in(buf);
+    forward(client, rename(nameIn, buf, names));
+  });
   upstream.on("unexpected-response", (_, res) => {
     log("remote_refused", { status: res.statusCode });
     end();

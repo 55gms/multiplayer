@@ -76,7 +76,7 @@ export class Peer extends EventEmitter {
       const params = new Reader(buf, 3).params();
       const rawReader = new Reader(buf, 3);
       const rawParams = rawReader.rawParams();
-      this.emit("op", opCode, params, rawParams);
+      this.emit("op", opCode, params, rawParams, buf);
     } catch (err) {
       log("bad_frame", { peer: this.id, ip: this.ip, error: String(err.message || err), head: buf.subarray(0, 16).toString("hex") });
       this.close();

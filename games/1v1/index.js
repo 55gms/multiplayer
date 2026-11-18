@@ -1,5 +1,6 @@
 // 1v1.lol (JustPlay.LOL, build 3.800, PUN 2): Photon name, master and game
-// servers at /api/mp/1v1/{ns,master,game}.
+// servers at /api/mp/1v1/{ns,master,game}, and /api/mp/1v1/remote, the relay
+// to another server's game server (remote.js).
 import { photonUpgrade, traffic } from "../../src/photon/peer.js";
 import { Err } from "../../src/photon/codes.js";
 import { log } from "../../src/log.js";
@@ -9,6 +10,7 @@ import { gameOp } from "./game.js";
 import { registry } from "./rooms.js";
 import { paramSummary } from "./master.js";
 import { queueSize } from "./accounts.js";
+import { remoteGameUpgrade, remoteStats } from "./remote.js";
 
 const DEBUG = process.env.MP_DEBUG === "1";
 
@@ -21,12 +23,12 @@ const roles = {
 function attach(role, handle) {
   return photonUpgrade((peer) => {
     peer.state.role = role;
-    peer.on("op", (opCode, params, rawParams) => {
+    peer.on("op", (opCode, params, rawParams, buf) => {
       if (DEBUG && !(role === "game" && opCode === 253 && [201, 206].includes(params.get(244)?.v ?? params.get(244)))) {
         log("op", { role, peer: peer.id, actor: peer.state.actor?.actorNr, op: opCode, params: paramSummary(params) });
       }
       try {
-        if (handle(peer, opCode, params, rawParams) === false) {
+        if (handle(peer, opCode, params, rawParams, buf) === false) {
           log("unknown_op", { role, op: opCode, params: [...params.keys()] });
           peer.respond(opCode, Err.InvalidOperation, new Map(), `Operation ${opCode} not supported`);
         }
@@ -44,6 +46,7 @@ export default {
   name: "1v1",
   upgrade(req, socket, head, rest) {
     const role = rest.split("/")[0];
+    if (role === "remote") return remoteGameUpgrade(req, socket, head);
     const upgrade = Object.hasOwn(upgrades, role) ? upgrades[role] : null;
     if (!upgrade) return socket.destroy();
     upgrade(req, socket, head);
@@ -71,6 +74,6 @@ export default {
     res.end('{"error":"not found"}');
   },
   stats() {
-    return { peers: traffic.peers, rooms: registry.count(), players: registry.players(), bytesIn: traffic.bytesIn, bytesOut: traffic.bytesOut, resultsQueued: queueSize() };
+    return { peers: traffic.peers, rooms: registry.count(), players: registry.players(), bytesIn: traffic.bytesIn, bytesOut: traffic.bytesOut, resultsQueued: queueSize(), remote: { ...remoteStats } };
   },
 };

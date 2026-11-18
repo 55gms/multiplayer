@@ -82,6 +82,7 @@ export const Param = {
   Remove: 239,
   PublishUserId: 239,
   Add: 238,
+  ExpectedUsers: 238, // JoinRandomGame / CreateGame / JoinGame: a party's user ids
   SuppressRoomEvents: 237,
   EmptyRoomTTL: 236,
   PlayerTTL: 235,

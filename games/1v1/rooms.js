@@ -106,8 +106,17 @@ export class Room {
     return this.actors.size + this.liveReservations(userId) < this.cap;
   }
 
-  reserve(userId) {
-    if (userId) this.reservations.set(userId, Date.now() + RESERVE_MS);
+  reserve(userId, ms = RESERVE_MS) {
+    if (userId) this.reservations.set(userId, Math.max(this.reservations.get(userId) || 0, Date.now() + ms));
+  }
+
+  // Room for every one of these users (a party), counting places already
+  // kept for them once.
+  hasSpaceForAll(userIds) {
+    const now = Date.now();
+    let others = 0;
+    for (const [userId, until] of this.reservations) if (until >= now && !userIds.includes(userId)) others++;
+    return this.actors.size + others + userIds.length <= this.cap;
   }
 
   // Applies a GameProperties hashtable: well-known byte keys go to fields,

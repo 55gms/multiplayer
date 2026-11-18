@@ -83,8 +83,20 @@ function rankedRefusal(peer) {
   return null;
 }
 
-function sendToRoom(peer, opCode, room) {
+// A party's user ids (the leader's search and room carry them as
+// ExpectedUsers), at most a room's worth.
+const PARTY_RESERVE_MS = 30_000;
+function partyOf(params) {
+  const list = params.get(Param.ExpectedUsers);
+  if (!Array.isArray(list)) return [];
+  return [...new Set(list.filter((id) => typeof id === "string" && id && id.length <= 64))].slice(0, 16);
+}
+
+function sendToRoom(peer, opCode, room, party = []) {
   room.reserve(peer.state.userId);
+  // The members follow their leader by FindFriends and JoinGame: keep their
+  // places, so nobody searching takes them first.
+  for (const id of party) if (id !== peer.state.userId) room.reserve(id, PARTY_RESERVE_MS);
   peer.respond(
     opCode,
     Err.Ok,
@@ -143,68 +155,25 @@ function findFriends(peer, opCode, params) {
   );
 }
 
-// --- the queue here, then the other server's ---------------------------
-// A casual search that finds no room waits here up to REMOTE.afterMs. A
-// second player searching for the same thing in that time meets the first
-// here (the first creates the room, the second waits for it). Nobody → the
-// search goes to the other server's queue (remote.js), and this connection
-// passes the player's master operations through to it from then on.
-const holders = new Map(); // search key -> { peer, local() }
-const HOLD_POLL_MS = 250;
-
-function hold(peer, key, find, answer, goRemote) {
-  peer.state.searching = true;
-  const started = Date.now();
-  const h = {
-    peer,
-    local() {
-      stop();
-      answer(null, Date.now() - started);
-    },
-  };
-  function stop() {
-    clearInterval(timer);
-    if (holders.get(key) === h) holders.delete(key);
-  }
-  const timer = setInterval(() => {
-    try {
-      if (peer.closed) {
-        stop();
-        peer.state.searching = false;
-        return;
-      }
-      const found = find();
-      if (found) {
-        stop();
-        return answer(found, Date.now() - started);
-      }
-      if (Date.now() - started >= REMOTE.afterMs) {
-        stop();
-        goRemote(Date.now() - started);
-      }
-    } catch (err) {
-      stop();
-      peer.state.searching = false;
-      log("op_error", { role: "master", op: Op.JoinRandomGame, error: String(err.stack || err) });
-      if (!peer.closed) peer.respond(Op.JoinRandomGame, Err.InternalServerError);
-    }
-  }, HOLD_POLL_MS);
-  holders.set(key, h);
-}
-
-function goRemote(peer, buf, answer, waited) {
+// --- the other server's queue ------------------------------------------
+// A casual search that finds no room here goes straight to the other
+// server's queue (remote.js): answering at once keeps the game's own
+// waiting room ("1/2") and its cancel button. This connection passes the
+// player's master operations through to it from then on. Parties stay here,
+// where the members can find their leader's room.
+function goRemote(peer, buf, answer) {
   peer.state.searching = true;
   openRemoteMaster(peer).then(
     (remote) => {
       if (peer.closed) return remote.close();
       peer.state.remote = remote;
       peer.state.searching = false;
-      log("join_remote", { peer: peer.id, waited });
+      log("join_remote", { peer: peer.id });
       remote.send(buf);
     },
     (err) => {
       log("remote_failed", { peer: peer.id, error: String(err.message || err) });
-      answer(null, waited);
+      answer(null, 0);
     },
   );
 }
@@ -271,7 +240,8 @@ export function masterOp(peer, opCode, params, rawParams, buf) {
         const refusal = rankedRefusal(peer);
         if (refusal) return peer.respond(opCode, Err.OperationNotAllowedInCurrentState, new Map(), refusal);
       }
-      const accept = (room) => Boolean(room.ranked) === ranked;
+      const party = partyOf(params);
+      const accept = (room) => Boolean(room.ranked) === ranked && room.hasSpaceForAll(party.length ? party : [peer.state.userId]);
       const myRating = ranked ? ratingFor(peer, mode) : 0;
       const filter = ranked && sql ? sql.filter(([, , op]) => op === "=") : sql;
       const find = () =>
@@ -282,7 +252,7 @@ export function masterOp(peer, opCode, params, rawParams, buf) {
         peer.state.searching = false;
         if (peer.closed) return;
         log("join_random", { peer: peer.id, found: room?.name || null, waited, expected: describe(expected), params: paramSummary(params) });
-        if (room) return sendToRoom(peer, opCode, room);
+        if (room) return sendToRoom(peer, opCode, room, party);
         creators.set(peer, { key, at: Date.now() });
         peer.respond(opCode, Err.NoRandomMatchFound, new Map(), "No match found");
       };
@@ -290,14 +260,9 @@ export function masterOp(peer, opCode, params, rawParams, buf) {
       const room = find();
       if (room) return answer(room, 0);
       if (!creatorPending(key, peer, waitMs)) {
-        if (ranked || !REMOTE.enabled || !buf) return answer(null, 0);
-        const other = holders.get(key);
-        if (!other || other.peer === peer || other.peer.closed) {
-          return hold(peer, key, find, answer, (waited) => goRemote(peer, buf, answer, waited));
-        }
-        // Someone is already waiting for this: they make the room, this
-        // player joins it.
-        other.local();
+        if (ranked || party.length > 1 || !REMOTE.enabled || !buf) return answer(null, 0);
+        peer.state.searching = true;
+        return goRemote(peer, buf, answer);
       }
       const started = Date.now();
       peer.state.searching = true;
@@ -344,7 +309,7 @@ export function masterOp(peer, opCode, params, rawParams, buf) {
       applyCreateOptions(room, params);
       room.creatorUserId = peer.state.userId;
       log("create_room", { peer: peer.id, room: room.name, max: room.maxPlayers, props: describe(room.props), params: paramSummary(params) });
-      return sendToRoom(peer, opCode, room);
+      return sendToRoom(peer, opCode, room, partyOf(params));
     }
 
     case Op.JoinGame: {

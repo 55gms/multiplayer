@@ -1,7 +1,7 @@
-// The queue on another 1v1.lol server. A casual search that finds nobody
-// here within REMOTE.afterMs is sent to another public Photon server for the
-// game (by default 1v1.lol Reloaded's, wss://ws.onecloudcdn.site/ns), so a
-// lone 55GMS player still finds an opponent:
+// The queue on another 1v1.lol server. A casual search that finds no room
+// here is sent to another public Photon server for the game (by default
+// 1v1.lol Reloaded's, wss://ws.onecloudcdn.site/ns), so a lone 55GMS player
+// still finds an opponent:
 //
 // - master: this connection logs in to the other name server and master
 //   (Authenticate with REMOTE.name as the nickname, the name that server
@@ -11,13 +11,16 @@
 // - game: /api/mp/1v1/remote relays the player's game server connection to
 //   that address frame for frame. Only the first Authenticate is rewritten,
 //   to carry the other server's token and user id instead of ours.
+// - names: there, our player is called REMOTE.name ("55gms.com"); here, every
+//   other player in the room is called REMOTE.opponentName ("bob"), and the
+//   player keeps their own name on their own screen.
 //
 // Ranked stays here (accounts only, results kept by 55GMS); matches played
 // there are not refereed, so they give no 55GMS XP.
 import { randomBytes } from "node:crypto";
 import WebSocket, { WebSocketServer } from "ws";
-import { Reader, Writer } from "../../src/photon/protocol18.js";
-import { MsgType, Op, Param, Err } from "../../src/photon/codes.js";
+import { Reader, Writer, Hashtable, byte } from "../../src/photon/protocol18.js";
+import { MsgType, Op, Param, Err, Ev, ActorProp } from "../../src/photon/codes.js";
 import { acceptConnection, clientIp, rateLimiter, MAX_MESSAGE_BYTES } from "../../src/limits.js";
 import { address } from "./address.js";
 import { log } from "../../src/log.js";
@@ -45,7 +48,7 @@ export const REMOTE = {
   host: URL_?.host || null,
   name: (process.env.MP_1V1_REMOTE_NAME || "55gms.com").slice(0, 32),
   region: process.env.MP_1V1_REMOTE_REGION || "us",
-  afterMs: Math.max(0, Number(process.env.MP_1V1_REMOTE_AFTER_MS) || 10_000),
+  opponentName: (process.env.MP_1V1_REMOTE_OPPONENT_NAME || "bob").slice(0, 32),
 };
 
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -240,6 +243,83 @@ export async function openRemoteMaster(peer) {
 
 // --- game server relay ----------------------------------------------------
 
+// --- names ----------------------------------------------------------------
+
+const NAME_KEY = byte(ActorProp.PlayerName);
+
+// A copy of a player's properties with the name set to `name`; null when
+// they carry no name.
+function renamed(props, name) {
+  if (typeof name !== "string" || !(props instanceof Hashtable) || !props.has(NAME_KEY)) return null;
+  const out = new Hashtable([...props]);
+  out.set(NAME_KEY, name);
+  return out;
+}
+
+// Re-encodes one message with some parameters replaced, the rest as they came.
+function rebuild(buf, type, code, start, replaced, head = null) {
+  const raw = new Reader(buf, start).rawParams();
+  for (const k of replaced.keys()) raw.delete(k);
+  const w = new Writer(buf.length + 64).byte(MAGIC).byte(type).byte(code);
+  if (head) head(w);
+  return Buffer.from(w.params(replaced, raw).finish());
+}
+
+// The player's own name on the way out: REMOTE.name. Joining or creating
+// the room carries it, and so does setting it later. Remembers their own
+// name so it can be put back on the way in.
+function nameOut(buf, names) {
+  if (buf.length < 4 || buf[1] !== MsgType.Operation) return buf;
+  const op = buf[2];
+  if (op !== Op.JoinGame && op !== Op.CreateGame && op !== Op.SetProperties) return buf;
+  const params = new Reader(buf, 3).params();
+  const key = op === Op.SetProperties ? Param.Properties : Param.PlayerProperties;
+  if (op === Op.SetProperties && !params.get(Param.ActorNr)) return buf; // room properties
+  const props = params.get(key);
+  const own = props instanceof Hashtable ? props.get(NAME_KEY) : null;
+  if (typeof own === "string") names.own = own;
+  const out = renamed(props, REMOTE.name);
+  return out ? rebuild(buf, MsgType.Operation, op, 3, new Map([[key, out]])) : buf;
+}
+
+// Names on the way in: the player's own back to theirs, everyone else's REMOTE.opponentName.
+function nameIn(buf, names) {
+  if (buf.length < 4) return buf;
+  const type = buf[1];
+  const nameFor = (actorNr) => (actorNr === names.actorNr ? names.own : REMOTE.opponentName);
+  if (type === MsgType.OperationResponse && (buf[2] === Op.JoinGame || buf[2] === Op.CreateGame || buf[2] === Op.JoinRandomGame)) {
+    const r = new Reader(buf, 5);
+    const debug = r.value();
+    const start = r.pos;
+    const params = new Reader(buf, start).params();
+    if (typeof params.get(Param.ActorNr) === "number") names.actorNr = params.get(Param.ActorNr);
+    const actors = params.get(Param.PlayerProperties);
+    if (!(actors instanceof Hashtable)) return buf;
+    const out = new Hashtable();
+    for (const [nr, props] of actors) out.set(nr, renamed(props, nameFor(typeof nr === "number" ? nr : nr?.v)) || props);
+    const rc = buf.readInt16LE(3);
+    return rebuild(buf, type, buf[2], start, new Map([[Param.PlayerProperties, out]]), (w) => w.short(rc).value(debug));
+  }
+  if (type !== MsgType.Event) return buf;
+  const code = buf[2];
+  if (code !== Ev.Join && code !== Ev.PropertiesChanged) return buf;
+  const params = new Reader(buf, 3).params();
+  const key = code === Ev.Join ? Param.PlayerProperties : Param.Properties;
+  const actorNr = code === Ev.Join ? params.get(Param.ActorNr) : params.get(Param.TargetActorNr);
+  if (typeof actorNr !== "number" || actorNr === 0) return buf;
+  const out = renamed(params.get(key), nameFor(actorNr));
+  return out ? rebuild(buf, MsgType.Event, code, 3, new Map([[key, out]])) : buf;
+}
+
+function rename(fn, buf, names) {
+  try {
+    return fn(buf, names);
+  } catch (err) {
+    log("remote_rename_error", { error: String(err.message || err) });
+    return buf;
+  }
+}
+
 // The player's first Authenticate, with the other server's login in place of ours.
 function rewriteAuth(buf, t) {
   if (buf.length < 4 || buf[0] !== MAGIC || buf[1] !== MsgType.Operation) return null;
@@ -261,6 +341,7 @@ function relay(client, t, ip) {
   let alive = true;
   let done = false;
   let authed = false;
+  const names = { own: null, actorNr: null };
   const upstream = connect(t.address);
   remoteStats.games++;
 
@@ -299,7 +380,7 @@ function relay(client, t, ip) {
         buf = rewritten;
       }
     }
-    forward(upstream, buf);
+    forward(upstream, rename(nameOut, buf, names));
   }
 
   client.on("pong", () => (alive = true));
@@ -318,7 +399,7 @@ function relay(client, t, ip) {
   upstream.on("open", () => {
     for (const data of pending.splice(0)) fromClient(data);
   });
-  upstream.on("message", (data) => forward(client, data));
+  upstream.on("message", (data) => forward(client, rename(nameIn, toBuffer(data), names)));
   upstream.on("unexpected-response", (_, res) => {
     log("remote_refused", { status: res.statusCode });
     end();

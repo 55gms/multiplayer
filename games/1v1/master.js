@@ -7,6 +7,7 @@ import { authenticate } from "./nameserver.js";
 import { registry, int } from "./rooms.js";
 import { isOnline, roomOf } from "./presence.js";
 import { log } from "../../src/log.js";
+import { REMOTE, openRemoteMaster } from "./remote.js";
 
 const lobbyPeers = new Set();
 
@@ -142,11 +143,85 @@ function findFriends(peer, opCode, params) {
   );
 }
 
-export function masterOp(peer, opCode, params) {
+// --- the queue here, then the other server's ---------------------------
+// A casual search that finds no room waits here up to REMOTE.afterMs. A
+// second player searching for the same thing in that time meets the first
+// here (the first creates the room, the second waits for it). Nobody → the
+// search goes to the other server's queue (remote.js), and this connection
+// passes the player's master operations through to it from then on.
+const holders = new Map(); // search key -> { peer, local() }
+const HOLD_POLL_MS = 250;
+
+function hold(peer, key, find, answer, goRemote) {
+  peer.state.searching = true;
+  const started = Date.now();
+  const h = {
+    peer,
+    local() {
+      stop();
+      answer(null, Date.now() - started);
+    },
+  };
+  function stop() {
+    clearInterval(timer);
+    if (holders.get(key) === h) holders.delete(key);
+  }
+  const timer = setInterval(() => {
+    try {
+      if (peer.closed) {
+        stop();
+        peer.state.searching = false;
+        return;
+      }
+      const found = find();
+      if (found) {
+        stop();
+        return answer(found, Date.now() - started);
+      }
+      if (Date.now() - started >= REMOTE.afterMs) {
+        stop();
+        goRemote(Date.now() - started);
+      }
+    } catch (err) {
+      stop();
+      peer.state.searching = false;
+      log("op_error", { role: "master", op: Op.JoinRandomGame, error: String(err.stack || err) });
+      if (!peer.closed) peer.respond(Op.JoinRandomGame, Err.InternalServerError);
+    }
+  }, HOLD_POLL_MS);
+  holders.set(key, h);
+}
+
+function goRemote(peer, buf, answer, waited) {
+  peer.state.searching = true;
+  openRemoteMaster(peer).then(
+    (remote) => {
+      if (peer.closed) return remote.close();
+      peer.state.remote = remote;
+      peer.state.searching = false;
+      log("join_remote", { peer: peer.id, waited });
+      remote.send(buf);
+    },
+    (err) => {
+      log("remote_failed", { peer: peer.id, error: String(err.message || err) });
+      answer(null, waited);
+    },
+  );
+}
+
+export function masterOp(peer, opCode, params, rawParams, buf) {
+  // Matched on the other server: everything goes there now.
+  if (peer.state.remote) {
+    peer.state.remote.send(buf);
+    return;
+  }
   switch (opCode) {
     case Op.Authenticate:
     case Op.AuthenticateOnce: {
       const first = !peer.state.authenticated;
+      // The other server's login (remote.js) uses the game's own.
+      if (typeof params.get(Param.ApplicationId) === "string") peer.state.appId = params.get(Param.ApplicationId).slice(0, 64);
+      if (typeof params.get(Param.AppVersion) === "string") peer.state.appVersion = params.get(Param.AppVersion).slice(0, 64);
       authenticate(peer, opCode, params, "master");
       if (!first) return;
       lobbyPeers.add(peer);
@@ -213,7 +288,17 @@ export function masterOp(peer, opCode, params) {
       };
       const waitMs = ranked ? RANKED_CREATOR_WAIT_MS : CREATOR_WAIT_MS;
       const room = find();
-      if (room || !creatorPending(key, peer, waitMs)) return answer(room, 0);
+      if (room) return answer(room, 0);
+      if (!creatorPending(key, peer, waitMs)) {
+        if (ranked || !REMOTE.enabled || !buf) return answer(null, 0);
+        const other = holders.get(key);
+        if (!other || other.peer === peer || other.peer.closed) {
+          return hold(peer, key, find, answer, (waited) => goRemote(peer, buf, answer, waited));
+        }
+        // Someone is already waiting for this: they make the room, this
+        // player joins it.
+        other.local();
+      }
       const started = Date.now();
       peer.state.searching = true;
       const poll = setInterval(() => {

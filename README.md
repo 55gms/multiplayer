@@ -1,12 +1,13 @@
 # 55GMS multiplayer
 
-One server for the multiplayer games on [55GMS](https://github.com/55gms/55GMS). Each game has its own endpoints under `/api/mp/<game>/`, speaking the protocol that game's client already expects, so the game files stay as they are. Players on 55GMS play each other; nobody here talks to the games' original servers.
+One server for the multiplayer games on [55GMS](https://github.com/55gms/55GMS). Each game has its own endpoints under `/api/mp/<game>/`, speaking the protocol that game's client already expects, so the game files stay as they are. Players on 55GMS play each other, except in Ducklings.io, where the server only relays the game to its own, still running, server.
 
 | Game                                 | Endpoints                                                                                 | Protocol                                                                          |
 | ------------------------------------ | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | 1v1.lol                              | `/api/mp/1v1/ns` (name server), `/api/mp/1v1/master`, `/api/mp/1v1/game`                  | Photon PUN 2 (binary protocol 1.8 over WebSocket)                                 |
 | BasketBros, SoccerBros, BaseballBros | `/api/mp/<game>/play`, `/api/mp/<game>/ping` (`basketbros`, `soccerbros`, `baseballbros`) | Blue Wizard's lockstep relay (little-endian ints over WebSocket), one against one |
 | FootballBros                         | `/api/mp/footballbros/play`, `/api/mp/footballbros/ping`                                  | The same relay with a lobby of up to three a side                                 |
+| Ducklings.io                         | `/api/mp/ducklings/play`                                                                  | Passed through unchanged to `wss://multiplayer.ducklings.io/ws`                   |
 
 `GET /api/mp/health` reports the games and open connections. Every minute the server logs one `stats` line (connections, rooms, players, bytes).
 
@@ -24,6 +25,7 @@ MP_DEBUG=1 node .     # also log every operation with its parameters
 - `src/limits.js` caps: 64 KiB per message, 120 messages/s per connection, 64 connections per IP, 60 s idle, 16 players per room
 - `src/photon/` the Photon layer any Photon game can reuse: `protocol18.js` (value codec), `codes.js` (operation, parameter and event codes), `peer.js` (framing, ping, limits)
 - `games/bros/` the four Blue Wizard sports games: `wire.js` (message bytes), `clock.js` (the shared 60 Hz tick), `duel.js` (one against one), `lobby.js` (FootballBros), `index.js` (sockets, limits, the region ping)
+- `games/ducklings/` a pass-through relay to Ducklings.io's own server
 - `games/1v1/` the three Photon roles over one in-memory room registry (`rooms.js`), 55GMS accounts (`accounts.js`) and the match referee (`referee.js`)
 
 ## 1v1.lol
@@ -64,6 +66,12 @@ Server to client, BasketBros, SoccerBros, BaseballBros (`duel.js`): nothing unti
 Server to client, FootballBros (`lobby.js`): the joiner gets its own `1` (client id, team, wins, losses, perks, outfit, isYou, side, name), every other player's `1`, and each side's team as `8, -1000 - side, team`; the others get the joiner's `1`; the host gets `9`. Side and team changes go to the others as `2, id, side` and `8, id, team`, a player leaving as `3, id` (a new host gets `9`). The host's `7` sends `7` to all, every player's `1` again, then ticks: `0, frame, count, then per player id and 5 input bytes`.
 
 `node` with two `ws` clients is enough to try it: connect to `ws://localhost:8093/api/mp/soccerbros/play` twice, send each a join, and both start getting ticks.
+
+## Ducklings.io
+
+Ducklings.io's server still runs, but the game can no longer reach it from 55GMS: the address in the game, `wss://ducklings.io/ws`, now redirects to `wss://multiplayer.ducklings.io/ws` (browsers do not follow redirects for WebSockets), that server answers 401 to any `Origin` but `https://ducklings.io`, and filters block the domain. An inline script in the game's page on 55GMS (`static/misc/ducklings-io/index.html`) sends any `ducklings.io` WebSocket to `/api/mp/ducklings/play`. For each connection there, `games/ducklings/index.js` opens one to the real server with `Origin: https://ducklings.io` and passes frames both ways unchanged; when either side closes, so does the other. Frames the game sends before the real server answers wait (64 at most).
+
+The server only does matchmaking and WebRTC signalling (JSON text frames such as `ping`, rooms, offers, ICE candidates, `turnCredentials`). A match itself runs between the players' browsers over WebRTC data channels, directly or through the game's TURN server, so it never passes through here; on a network that blocks that, players find a room and then fail to connect to each other. Every player reaches the real server from this box's address.
 
 ## Production
 

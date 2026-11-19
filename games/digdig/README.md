@@ -14,10 +14,30 @@ The mode buttons ask `api.n.m28.io/endpoint/digdig-<mode>/findEach/` with mode
 client then opens `wss://<mode>.s.m28n.net/`, which the page sends to
 `/api/mp/digdig/play?mode=<mode>`. Each mode gets its own lobbies (`modes.js`).
 
-Done: FFA, Battle Royale (rounds, countdown, shrinking arena, winner). TDM, Tag
-and Maze play as FFA. Not found yet: how a digger gets a team colour, the client
-flag (byte 10 of the game object at 331776, 0 in every mode so far) that turns on
-the Tag HUD, and the maze the client draws for map flag 16.
+Done: FFA; Battle Royale (rounds, countdown, shrinking arena, winner); TDM
+(three teams in M28's colours, component 10 field 66, no damage between
+teammates); Tag (5-minute rounds, seekers red, a tag turns a hider into a seeker;
+the role entity below); Maze (map flag 16, `maze.js`). Not done: squads (see
+below).
+
+Tag's "You are a seeker/hider" banner needs byte 10 of the game object at 331776
+set, and no server message sets it that we know of; the 55GMS page sets it in
+memory during Tag games.
+
+## Accounts, gold and the shop
+
+55GMS accounts stand in for M28's (`accounts.js`). The 55GMS page saves a
+digdig game token as the client's own login (localStorage
+`oauth2_data_DO_NOT_SHARE`: base64 of id, provider, token, display name, each
+NUL-ended, an f64 expiry in ms, and an avatar string). With provider `discord`
+the client counts itself signed in, shows the display name, and sends message
+28 on connect; its third string is the token, which 55GMS checks
+(`/api/digdig/internal/verify`). Server message 6 signs the client out.
+
+The shop is the client's (`skins.js` has its table): prices are shown by the
+client but charged by 55GMS (`/api/digdig/internal/buy`). Gold a life collects,
+plus 10% of the gold of diggers it destroyed (the client's changelog), is
+granted when the life ends (`/api/digdig/internal/gold`, once per digger).
 
 ## Finding the server
 
@@ -47,7 +67,20 @@ Server to client:
 | 0 | disconnect, raw: `[varint reason]` (1 kicked, 2 banned, 3 idle, 4 too many connections, 5 shutting down, 6 protocol error, 7 invalid token, 8 server full, 9 outdated (the client reloads), 10 server error) |
 | 1 | snapshot: `[varint X][snapshot]`, X counts up, the client echoes it in a type 2 |
 | 2 | compressed: `[u32 size][LZ4 block]`, the block is a whole packet `[type][body]` |
-| 5 | a string |
+| 5 | reliable messages: `[varint world id]`, then masked like the client's stream (STREAM_MASK from the byte after the world id) `[varint seq][varint id][payload]` repeated; the client runs a message whose seq is above the last it ran, or 0 |
+
+Server messages (type 5), handled by client f1392:
+
+| id | payload |
+| -- | ------- |
+| 6 | empty: sign out (the client forgets its saved login) |
+| 12 | five strings and an f64 (`s s s f64 s s`): a new saved login, stored as id, provider, token, display name, expiry, avatar |
+| 18 | `[varint request][string code]`: the squad the client asked for (state "Creating..." to the code) |
+| 19 | string: stored as localStorage `cp6_player_id` |
+| 22 | varint: an achievement's "+N gold" popup |
+| 25 | `[u32 entity][u8]`: a mark on an entity, unknown |
+| 26 | empty, unknown (runs once) |
+| 27 | `[varint request][string code]`: the squad the client asked to join |
 
 Answering anything with type 2 breaks the stream: it is a compressed packet.
 
@@ -62,7 +95,9 @@ seqs have gaps. Every message must be parsed to find the next; the payloads:
 | id | payload |
 | -- | ------- |
 | 1 | empty: Play (spawn with the last nickname) |
-| 2 | chat `string\0` |
+| 2 | shop Buy: the skin id `string\0` (digdig.io has no chat) |
+| 7 | `[varint request]`: a squad (opening the Squad panel, Find Public) |
+| 9 | `[varint request]`: a new squad (New) |
 | 3, 24, 34 | empty, meaning unknown |
 | 4 | empty: the client gives up its dead digger (Continue) |
 | 14 | `string\0`, unknown |
@@ -71,7 +106,9 @@ seqs have gaps. Every message must be parsed to find the next; the payloads:
 | 28 | three `string\0` and an f64: account login data |
 | 10 | empty, first message |
 | 13 | `[u8 1][user agent\0][\0][language\0]` |
-| 20 | two bytes |
+| 20 | equipped skins `[u8 face][u8 spinner]`, indexes in `skins.js`, 0 none |
+| 28 | the saved login: provider, token and id strings in some order (`[id][provider][token]` as sent), then the f64 expiry; the first message on connect |
+| 29 | empty, after a message 12 |
 | 16 | nickname `string\0`, before Play and again as it settles |
 | 5 | input, unreliable: `[varint flags][f32 angle][f32 distance]`; flags 65536, +1 left button; angle in radians, distance in world units from the digger |
 | 23 | empty, every few seconds |
@@ -146,9 +183,14 @@ values are interpolated over ~120 ms when they change):
 | 41 | 8 view | f32 | death screen: gold collected (shown when above 0) |
 | 49, 52 | 8 view | f64 | spawn and death time, ms; the death screen shows Time Alive = 52 - 49 |
 | 55 | 8 view | f32 | death screen: Max Points |
-| 19 | 4 game | f64 | Tag: ms into the round; "Game restarting" counts down from 300000 |
+| 19 | 4 game | f32 | Tag: ms into the round, shown counting down from 300000 (an f64 here freezes the client) |
 | 62, 63 | 9 | rgb, bit | unknown; a colour and a flag (did not change how a digger is drawn) |
-| 71 | 11 | u8 | Tag: 0 shows "You are a seeker", else "You are a hider" (only with the client's Tag HUD on, see below) |
+| 66 | 10 digger | rgb | body colour (team colour); tunnels it digs take it too |
+| 68 | 10 digger | sparse u8 | skins worn: [face, spinner] |
+| 35 | 8 view | u8 | bit 2: account loaded (the shop shows field 51) |
+| 44 | 8 view | list | skins owned: `[varint count]`, then (if any) a sparse list of strings |
+| 51 | 8 view | f64 | the account's gold |
+| 71 | 11 | u8 | Tag: 0 "You are a seeker", else "You are a hider", shown 10 s when it changes; the client reads the first component 11 entity, so it is an entity of its own (not the view, which breaks the menu) |
 
 Components 4 and 12 belong to the world, not to the entity (one of each).
 
@@ -179,6 +221,24 @@ players". Component 8 fields 37 and 47 move the camera.
 
 Entity components set bits in the entity: +57 bit 1 is component 0, 2 is 1, 4 is 2,
 8 is 3, 16 is 4, 64 is 6, 128 is 7; +58 bit 1 is component 8, 2 is 9, 4 is 10, 8 is 11.
+
+## Squads (not done)
+
+Opening the Squad panel sends message 7, New message 9, both with a request
+number the client counts up; message 18 with that number and a code answers
+them. Codes are `<server id>-<code>` with at least 6 characters after the dash.
+Join reconnects to `<server id>.s.m28n.net` and sends its request only once the
+client's current server id matches; with byte 8 of the game object set the
+client takes that id from a string in its world object (offset 24) which stays
+empty, so Join waits on "Loading.." forever. What fills it, the join message,
+and how members are shown are not known.
+
+## Maze
+
+Map flag 16: the client carves a 1080 x 1080 grid (one cell per 8 x 8 tiles)
+from the seed with 150 shrinking worms (f1008) and draws bedrock outside it.
+`maze.js` matches it bit for bit; `tools/digdig/maze-oracle.py` cuts the
+client's generator out to check a new build against.
 
 ## Tools
 

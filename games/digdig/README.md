@@ -89,6 +89,7 @@ values are interpolated over ~120 ms when they change):
 | 1, 2 | 0 transform | svarint/4 | x, y (relative to the parent, see component 5) |
 | 3 | 0 transform | u16 | angle, 2π/65536 per unit |
 | 4, 5, 6 | 1 health | f32 | 5 is health; the client counts the player alive while it is above 0 |
+| 7 | 2 | u8 | unknown; component 2 also holds the tick the client last saw the entity |
 | 8 | 3 | f32 | radius |
 | 12 | 4 game | f32 | arena diameter (the arena is a circle) |
 | 13, 15 | 4 game | f32 | arena centre x, y |
@@ -96,11 +97,25 @@ values are interpolated over ~120 ms when they change):
 | 21 | 4 game | f32 | countdown, ms |
 | 25 | 4 game | f32 | arena scale (1) |
 | 29, 30 | 5 | entity id | the parent (positions are relative to it, rotated by its angle) |
-| 31 | 6 terrain chunk | sparse bytes | `[varint (index delta) ^ 1][u8]` pairs, then 1; byte i holds tiles x = (i % 8) * 8 + bit, y = i / 8 of a 64-wide bitmap |
-| 32, 33 | 6 terrain chunk | varint | chunk x, y |
+| 31 | 6 terrain chunk | sparse bytes | `[varint (index delta) ^ 1][u8]` pairs, then 1, index from 0. Bytes 0-511: the dug layer (bit set = dug); bytes 3060-3571: the reveal layer (bit set = this player can see the tile). Byte i holds tiles x = (i % 8) * 8 + bit, y = i / 8 |
+| 32, 33 | 6 terrain chunk | varint | chunk x, y (unsigned: keep the map at positive coordinates) |
+| 34 | 7 name | string | the digger's name |
+| 37, 47 | 8 view | svarint/4 | camera x, y |
 | 53 | 8 view | entity id | the entity the client plays as |
+| 69 | 10 digger | f64 | score |
 
 Components 4 and 12 belong to the world, not to the entity (one of each).
+
+Tiles are 16 world units, chunks 64 x 64 tiles; a tile's material comes from
+`terrain.js` (the client works it out itself from component 4 fields 27, the
+seed, and 11, the map flags). Materials: 1 amethyst (vision), 2 gold, 3 dirt,
+5 bedrock (cannot be dug), 6 uranium (mass boost), 7 lava, 8 unknown (teal),
+9 quartz (shield), going by the client's colours and changelog.
+
+A digger is an entity with components 0, 1, 2, 3, 7 and 10. The client draws
+another player's digger only while some tile under it (radius + 16) is set in a
+chunk's reveal layer; that is how the server decides what each player sees.
+Undug tiles outside the reveal layer show as dark grey.
 
 ## Getting into the game
 
@@ -112,6 +127,9 @@ with the nickname. The client then waits on "Connecting" until:
 - an entity has component 8 (the first one created is the client's own view), and
 - its field 53 (an entity id) names an entity with component 10, and
 - that entity's component 1 field 5 (health, f32) is above 0.
+
+Component 4 field 17 must have bit 2 set, or the client shows "Waiting for
+players". Component 8 fields 37 and 47 move the camera.
 
 Entity components set bits in the entity: +57 bit 1 is component 0, 2 is 1, 4 is 2,
 8 is 3, 16 is 4, 64 is 6, 128 is 7; +58 bit 1 is component 8, 2 is 9, 4 is 10, 8 is 11.

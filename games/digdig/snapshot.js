@@ -54,9 +54,9 @@ export const FLAG_NO_COMPONENTS = 32;
 
 // One entity: components (indexes 0-13, a new entity) or null (an update), then
 // fields as [[index, write(w)], ...] in increasing index order.
-export function writeEntity(w, id, components, fields = []) {
+export function writeEntity(w, id, components, fields = [], extraFlags = 0) {
   w.id(id);
-  let flags = 0;
+  let flags = extraFlags;
   if (components) {
     flags |= FLAG_COMPONENT_MASK;
   } else {
@@ -81,7 +81,7 @@ export function snapshot({ world = 1, tick, ack = 0, deleted = [], entities = []
   w.varint(deleted.length).u16(0);
   for (const id of deleted) w.id(id);
   w.u16(0);
-  for (const e of entities) writeEntity(w, e.id, e.components, e.fields);
+  for (const e of entities) writeEntity(w, e.id, e.components, e.fields, e.flags);
   w.u32(0);
   for (const [seq, body] of messages) w.varint(seq).bytes(body);
   w.varint(0);

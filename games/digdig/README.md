@@ -63,11 +63,11 @@ An entity is `[u32 id]` (0 ends the list) then `[flags ^ 18]`:
 - flags & 2: sets a mark on the entity (unknown)
 
 Fields: a running index starting at 0; each field is `varint((index - previous) ^ 1)`
-followed by its value; a raw 1 ends the list. Field indexes 2 to 87, by component:
+followed by its value; a raw 1 ends the list. Field indexes 1 to 87, by component:
 
 | component | fields |
 | --------- | ------ |
-| 0 | 2, 3 (2 is a signed varint / 4, interpolated: a position) |
+| 0 | 1, 2, 3 |
 | 1 | 4, 5, 6 (f32) |
 | 2 | 7 |
 | 3 | 8 |
@@ -80,6 +80,27 @@ followed by its value; a raw 1 ends the list. Field indexes 2 to 87, by componen
 | 10 | 64 to 70 |
 | 11 | 71, 72 |
 | 12 | 73 to 87 |
+
+Field meanings found so far ("svarint/4": zigzag varint, divided by 4 by the client;
+values are interpolated over ~120 ms when they change):
+
+| field | component | type | meaning |
+| ----- | --------- | ---- | ------- |
+| 1, 2 | 0 transform | svarint/4 | x, y (relative to the parent, see component 5) |
+| 3 | 0 transform | u16 | angle, 2π/65536 per unit |
+| 4, 5, 6 | 1 health | f32 | 5 is health; the client counts the player alive while it is above 0 |
+| 8 | 3 | f32 | radius |
+| 12 | 4 game | f32 | arena diameter (the arena is a circle) |
+| 13, 15 | 4 game | f32 | arena centre x, y |
+| 17 | 4 game | varint | state flags: 2 running; else 8 with 10 clear shows a countdown from field 21 (ms); else "Waiting for players" |
+| 21 | 4 game | f32 | countdown, ms |
+| 25 | 4 game | f32 | arena scale (1) |
+| 29, 30 | 5 | entity id | the parent (positions are relative to it, rotated by its angle) |
+| 31 | 6 terrain chunk | sparse bytes | `[varint (index delta) ^ 1][u8]` pairs, then 1; byte i holds tiles x = (i % 8) * 8 + bit, y = i / 8 of a 64-wide bitmap |
+| 32, 33 | 6 terrain chunk | varint | chunk x, y |
+| 53 | 8 view | entity id | the entity the client plays as |
+
+Components 4 and 12 belong to the world, not to the entity (one of each).
 
 ## Getting into the game
 

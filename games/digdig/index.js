@@ -6,15 +6,25 @@ import { log } from "../../src/log.js";
 import { World, TICK_MS } from "./world.js";
 import { Connection } from "./connection.js";
 import { Bot, botName } from "./bots.js";
+import { rulesFor } from "./modes.js";
 
 const MAX_PLAYERS = 20; // people per lobby
 const TARGET_DIGGERS = 12; // bots fill a lobby up to this many diggers
 const MIN_BOTS = 4; // and there are always at least this many
 const HEARTBEAT_MS = 20_000;
+const EMPTY_LOBBY_MS = 120_000; // a lobby nobody has played in this long stops
+
+// The client's mode buttons: digdig-<mode> endpoints.
+export const MODES = ["ffa", "teams", "tag", "br", "maze"];
+const modeOf = (req) => {
+  const m = new URL(req.url, "http://x").searchParams.get("mode");
+  return MODES.includes(m) ? m : "ffa";
+};
 
 class Lobby {
-  constructor(id) {
+  constructor(id, mode) {
     this.id = id;
+    this.mode = mode;
     this.world = new World({ radiusTiles: Number(process.env.DIGDIG_ARENA_TILES) || 200 });
     this.connections = new Set();
     this.bots = new Set();
@@ -23,6 +33,8 @@ class Lobby {
       for (const c of this.connections) c.onDeath(e.digger);
       for (const b of this.bots) if (b.d === e.digger) this.bots.delete(b);
     });
+    this.rules = rulesFor(mode, this);
+    this.lobbyFor = lobbyFor;
     this.timer = setInterval(() => this.step(), TICK_MS);
     this.timer.unref?.();
     this.fillBots();
@@ -32,14 +44,16 @@ class Lobby {
     return this.connections.size;
   }
 
-  fillBots() {
+  // force: fill now even if the mode lets no bots in (the start of a round)
+  fillBots(force = false) {
+    if (!force && !this.rules.wantBots()) return;
     const humans = [...this.world.diggers.values()].filter((d) => !d.bot).length;
     const want = Math.max(MIN_BOTS, TARGET_DIGGERS - humans);
     const taken = new Set([...this.world.diggers.values()].map((d) => d.name));
     while (this.bots.size < want) {
       const d = this.world.addDigger({ name: botName(taken), bot: true });
       // bots start at different sizes, so there is something to hunt and to run from
-      d.score = Math.floor(Math.random() ** 2 * 6000);
+      d.score = this.rules.botScore?.() ?? Math.floor(Math.random() ** 2 * 6000);
       taken.add(d.name);
       this.bots.add(new Bot(this.world, d));
     }
@@ -53,9 +67,29 @@ class Lobby {
     }
   }
 
+  // moves a connection here from another lobby of the same mode
+  take(conn) {
+    const from = conn.lobby;
+    if (from === this) return;
+    from.connections.delete(conn);
+    conn.close();
+    from.fillBots();
+    conn.moveTo(this);
+    this.connections.add(conn);
+  }
+
+  stop() {
+    clearInterval(this.timer);
+    lobbies.splice(lobbies.indexOf(this), 1);
+    log("digdig_lobby_stop", { lobby: this.id, mode: this.mode });
+  }
+
   step() {
+    if (this.connections.size) this.lastPlayer = Date.now();
+    else if (Date.now() - (this.lastPlayer || 0) > EMPTY_LOBBY_MS) return this.stop();
     for (const b of this.bots) b.think();
     this.world.step();
+    this.rules.step();
     if (this.world.tick % 20 === 0) this.fillBots();
     for (const c of this.connections) {
       try {
@@ -69,10 +103,15 @@ class Lobby {
 }
 
 const lobbies = [];
-function lobbyFor() {
-  let lobby = lobbies.find((l) => l.players < MAX_PLAYERS);
+let lobbyIds = 0;
+// a lobby of this mode with room, preferring one that lets people in right now
+// (a Battle Royale round that has not started)
+export function lobbyFor(mode) {
+  const open = lobbies.filter((l) => l.mode === mode && l.players < MAX_PLAYERS);
+  let lobby = open.find((l) => l.rules.canSpawn()) || (mode === "br" ? null : open[0]);
   if (!lobby) {
-    lobby = new Lobby(lobbies.length + 1);
+    lobby = new Lobby(++lobbyIds, mode);
+    lobby.lastPlayer = Date.now();
     lobbies.push(lobby);
   }
   return lobby;
@@ -82,12 +121,12 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES,
 
 function onConnection(ws, req, release) {
   const ip = clientIp(req);
-  const lobby = lobbyFor();
+  const lobby = lobbyFor(modeOf(req));
   const conn = new Connection(ws, lobby, log);
   const limiter = rateLimiter();
   let alive = true;
   lobby.connections.add(conn);
-  log("digdig_join", { ip, lobby: lobby.id, players: lobby.players });
+  log("digdig_join", { ip, lobby: lobby.id, mode: lobby.mode, players: lobby.players });
   const heartbeat = setInterval(() => {
     if (!alive) return ws.terminate();
     alive = false;
@@ -109,10 +148,10 @@ function onConnection(ws, req, release) {
     if (done) return;
     done = true;
     clearInterval(heartbeat);
-    lobby.connections.delete(conn);
+    conn.lobby.connections.delete(conn);
     conn.close();
     release();
-    lobby.fillBots();
+    conn.lobby.fillBots();
   };
   ws.on("close", end);
   ws.on("error", end);
@@ -135,7 +174,9 @@ export default {
     // what the client asks api.n.m28.io for, so a page can point it here
     if (rest === "servers") {
       res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*", "cache-control": "no-store" });
-      return res.end(JSON.stringify({ servers: { "vultr-chicago": { id: "digdig", ipv4: "127.0.0.1", ipv6: "::1" } } }));
+      // the id comes back as the game server's host name, <id>.s.m28n.net
+      const id = modeOf(req);
+      return res.end(JSON.stringify({ servers: { "vultr-chicago": { id, ipv4: "127.0.0.1", ipv6: "::1" } } }));
     }
     res.writeHead(404).end();
   },

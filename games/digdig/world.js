@@ -108,6 +108,7 @@ export class World {
     this.radius = radiusTiles * TILE;
     this.listeners = new Set(); // (event) => void: kill, death
     this.materialCache = new Map();
+    this.peaceful = false; // no damage (a Battle Royale countdown)
   }
 
   chunk(cx, cy) {
@@ -221,7 +222,7 @@ export class World {
   }
 
   damage(d, amount, from) {
-    if (!d.alive) return;
+    if (!d.alive || this.peaceful) return;
     if (d.quartz > 0) amount /= 2;
     if (d.input.buttons & INPUT_DEFEND) amount *= 0.6;
     d.health -= amount;

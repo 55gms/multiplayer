@@ -397,7 +397,8 @@ function serverMessage(member, frame) {
     case "race_start_roster":
       if (member.playerId !== session.hostId) return;
       session.startRace(decode(name, body).racerIds || []);
-      break;
+      // The host gets its own roster back too, as from the original.
+      return session.broadcast(frame);
     case "player_finished":
       // Passed on to everyone below; the server also keeps the order.
       finishedBy(member, session, decode(name, body));
@@ -417,9 +418,9 @@ function serverMessage(member, frame) {
       return session.broadcast(clientFrame(name, { ...msg, serverTime: now, startTime: now + COUNTDOWN_LEAD_S }));
     }
   }
-  // Anything else meant for the server goes to every member as it came, the
-  // sender too, as the original does with the host's race_start_roster.
-  session.broadcast(frame);
+  // Anything else meant for the server (the host's player_finished for each
+  // racer and bot) goes to the other members as it came, unstamped.
+  session.broadcast(frame, member);
 }
 
 // A racer reports their own finish; the host may report anyone's.

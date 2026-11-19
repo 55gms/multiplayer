@@ -3,6 +3,7 @@ import { ClientCipher, ServerCipher } from "./cipher.js";
 import { unmaskClient, readVarint, readClientMessages } from "./stream.js";
 import { Writer, writeEntity, entityId, snapshot } from "./snapshot.js";
 import { TILE, CHUNK, INPUT_ATTACK, INPUT_DEFEND } from "./world.js";
+import { STATE_RUNNING, STATE_WAITING } from "./modes.js";
 
 const WORLD_ID = 1;
 const VIEW = entityId(1);
@@ -17,6 +18,7 @@ const diggerEntity = (d) => entityId(100 + (d.id % 20000), 1 + (Math.floor(d.id 
 const chunkEntity = (cx, cy) => entityId(30000 + cy * 135 + cx);
 
 const f32 = (v) => (w) => w.f32(v);
+const f64 = (v) => (w) => w.f64(v);
 const svar4 = (v) => (w) => w.zigzag(Math.round(v * 4));
 const varint = (v) => (w) => w.varint(v);
 const u8 = (v) => (w) => w.u8(v);
@@ -54,6 +56,7 @@ export class Connection {
     this.tick = 0;
     this.digger = null;
     this.deadAt = 0;
+    this.wantsPlay = false; // pressed Play while the mode let nobody in
     this.nickname = "";
     this.camera = { x: this.world.center, y: this.world.center };
     // what the client has: entity id -> Map(field -> Buffer)
@@ -93,7 +96,14 @@ export class Connection {
       // the client sends the name again as it settles; take it while the digger is new
       if (this.digger?.alive && this.world.tick - this.digger.spawnTick < 40) this.digger.name = this.nickname || "Unnamed";
     } else if (m.name === "play") {
-      if (!this.digger || !this.digger.alive) this.spawn();
+      if (this.digger?.alive) return;
+      if (this.lobby.rules.canSpawn()) return this.spawn();
+      // out of a running round: on to one that has not started
+      const next = this.lobby.lobbyFor(this.lobby.mode);
+      if (next !== this.lobby && next.rules.canSpawn()) {
+        next.take(this);
+        this.spawn();
+      } else this.wantsPlay = true;
     } else if (m.name === "input" && this.digger?.alive) {
       const d = this.digger;
       const throttle = Math.max(0, Math.min(1, m.distance / Math.max(60, d.radius * 3)));
@@ -106,6 +116,7 @@ export class Connection {
   }
 
   spawn() {
+    this.wantsPlay = false;
     this.digger = this.world.addDigger({ name: this.nickname || "Unnamed" });
     if (process.env.DIGDIG_DEBUG) this.log("digdig_spawn", { id: this.digger.id });
     this.deadAt = 0;
@@ -113,6 +124,15 @@ export class Connection {
 
   onDeath(d) {
     if (d === this.digger) this.deadAt = this.world.tick;
+  }
+
+  // into another lobby's world; what the client has is diffed against the new one
+  moveTo(lobby) {
+    this.lobby = lobby;
+    this.world = lobby.world;
+    this.digger = null;
+    this.deadAt = 0;
+    this.camera = { x: this.world.center, y: this.world.center };
   }
 
   close() {
@@ -134,6 +154,10 @@ export class Connection {
     const entities = new Map(); // id -> { components, fields: [[index, fn]] }
 
     const ranked = [...world.diggers.values()].sort((a, b) => b.shownScore - a.shownScore);
+    const rules = this.lobby.rules;
+    const arena = rules.arena();
+    // someone out of a running round waits for the next one
+    const state = arena.state === STATE_RUNNING && !me?.alive && !rules.canSpawn() ? STATE_WAITING : arena.state;
     const top = ranked.slice(0, LEADERBOARD);
     entities.set(ARENA, {
       components: [4, 12],
@@ -144,9 +168,11 @@ export class Connection {
         [13, f32(world.center)],
         [15, f32(world.center)],
         [16, varint(ranked.length)],
-        [17, varint(2)],
+        [17, varint(state)],
         [18, sparse(top, (w, d) => (d === me ? w.u8(255).u8(214).u8(64) : w.u8(150).u8(150).u8(150)))],
         [20, sparse(top, (w, d) => w.string(d.name))],
+        [21, f32(arena.countdownMs)],
+        [24, varint(arena.needed || 0)],
         [22, sparse(top, (w, d) => w.id(diggerEntity(d)))],
         [25, f32(1)],
         [27, varint(world.seed >>> 0)],
@@ -179,9 +205,24 @@ export class Connection {
     entities.set(VIEW, {
       components: [8],
       fields: [
+        // bit 8: "YOU HAVE WON"
+        [35, u8(rules.won?.(me) ? 8 : 0)],
         [37, svar4(cam.x)],
-        [47, svar4(cam.y)],
-        [53, ref(me ? diggerEntity(me) : 0)],
+        // the death screen: diggers destroyed, gold, time alive (52 - 49, ms), max points
+        ...(me
+          ? [
+              [38, varint(me.kills)],
+              [41, f32(me.gold)],
+              [47, svar4(cam.y)],
+              [49, f64(me.spawnedAt)],
+              [52, f64(me.diedAt || me.spawnedAt)],
+              [53, ref(diggerEntity(me))],
+              [55, f32(Math.max(me.maxScore, me.shownScore))],
+            ]
+          : [
+              [47, svar4(cam.y)],
+              [53, ref(0)],
+            ]),
       ],
     });
 

@@ -22,6 +22,17 @@ const varint = (v) => (w) => w.varint(v);
 const u8 = (v) => (w) => w.u8(v);
 const str = (v) => (w) => w.string(v);
 const ref = (id) => (w) => w.id(id);
+// a sparse array field: [varint (index delta) ^ 1][value] per entry, then 1
+const sparse = (list, write) => (w) => {
+  let cum = 0;
+  list.forEach((v, i) => {
+    w.varint((i + 1 - cum) ^ 1);
+    cum = i + 1;
+    write(w, v);
+  });
+  w.varint(1);
+};
+const LEADERBOARD = 10;
 const u16angle = (a) => (w) => w.u16(Math.round((((a % (Math.PI * 2)) + Math.PI * 2) / (Math.PI * 2)) * 65536) & 65535);
 
 function encode(fn) {
@@ -79,6 +90,8 @@ export class Connection {
     if (m.name === "spawn") {
       this.nickname = (m.nickname || "").slice(0, 20).trim();
       if (!this.digger || !this.digger.alive) this.spawn();
+      // the client sends the name again as it settles; take it while the digger is new
+      else if (this.world.tick - this.digger.spawnTick < 40) this.digger.name = this.nickname || "Unnamed";
     } else if (m.name === "input" && this.digger?.alive) {
       const d = this.digger;
       const throttle = Math.max(0, Math.min(1, m.distance / Math.max(60, d.radius * 3)));
@@ -117,16 +130,24 @@ export class Connection {
     const cam = this.camera;
     const entities = new Map(); // id -> { components, fields: [[index, fn]] }
 
+    const ranked = [...world.diggers.values()].sort((a, b) => b.shownScore - a.shownScore);
+    const top = ranked.slice(0, LEADERBOARD);
     entities.set(ARENA, {
       components: [4, 12],
       fields: [
+        [9, u8(top.length)],
         [11, u8(world.flags)],
         [12, f32(world.radius * 2)],
         [13, f32(world.center)],
         [15, f32(world.center)],
+        [16, varint(ranked.length)],
         [17, varint(2)],
+        [18, sparse(top, (w, d) => (d === me ? w.u8(255).u8(214).u8(64) : w.u8(150).u8(150).u8(150)))],
+        [20, sparse(top, (w, d) => w.string(d.name))],
+        [22, sparse(top, (w, d) => w.id(diggerEntity(d)))],
         [25, f32(1)],
         [27, varint(world.seed >>> 0)],
+        [28, sparse(top, (w, d) => w.varint(Math.max(0, d.shownScore)))],
       ],
     });
 

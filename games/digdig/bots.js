@@ -10,7 +10,7 @@ const NAMES = [
   "Augur", "Dirt Devil", "Badger", "Wormy", "Gravel", "Pickaxe", "Lode", "Sandy", "Boulder",
 ];
 
-const SENSE = 900; // units
+const SENSE = 1300; // units
 const ORE_SENSE_TILES = 14;
 const ORES = new Set([M.GOLD, M.TEAL, M.AMETHYST, M.QUARTZ, M.URANIUM]);
 

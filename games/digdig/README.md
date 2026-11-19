@@ -48,7 +48,9 @@ seq counts 1, 2, 3... for reliable messages. Seen so far:
 | 10 | empty, first message |
 | 13 | `[u8 1][user agent\0][\0][language\0]` |
 | 20 | `[00 00]` |
-| 16 | nickname `string\0` (sent as it is typed) |
+| 16 | spawn: nickname `string\0` (Play; may come again with the settled name) |
+| 5 | input, unreliable: `[varint flags][f32 angle][f32 distance]`; flags 65536, +1 left button; angle in radians, distance in world units from the digger |
+| 23 | empty, on Space |
 
 ## Snapshot
 
@@ -61,6 +63,9 @@ An entity is `[u32 id]` (0 ends the list) then `[flags ^ 18]`:
 - flags & 32: no component list; otherwise the components it has:
   - flags & 64: `u16` bitmask (low 14 bits), else a delta list like the fields below
 - flags & 2: sets a mark on the entity (unknown)
+
+Sparse arrays (fields 18, 20, 22, 28, 31, 43...) are `[varint (index + 1 - previous) ^ 1][value]`
+entries with indexes counting from 0, ended by a raw 1.
 
 Fields: a running index starting at 0; each field is `varint((index - previous) ^ 1)`
 followed by its value; a raw 1 ends the list. Field indexes 1 to 87, by component:
@@ -91,11 +96,19 @@ values are interpolated over ~120 ms when they change):
 | 4, 5, 6 | 1 health | f32 | 5 is health; the client counts the player alive while it is above 0 |
 | 7 | 2 | u8 | unknown; component 2 also holds the tick the client last saw the entity |
 | 8 | 3 | f32 | radius |
+| 9 | 4 game | u8 | leaderboard rows |
 | 12 | 4 game | f32 | arena diameter (the arena is a circle) |
 | 13, 15 | 4 game | f32 | arena centre x, y |
+| 16 | 4 game | varint | digger count ("N Diggers") |
+| 18 | 4 game | sparse rgb | leaderboard bar colours, 3 bytes per row |
+| 20 | 4 game | sparse strings | leaderboard names |
+| 22 | 4 game | sparse entity ids | leaderboard diggers |
+| 28 | 4 game | sparse varints | leaderboard scores |
 | 17 | 4 game | varint | state flags: 2 running; else 8 with 10 clear shows a countdown from field 21 (ms); else "Waiting for players" |
 | 21 | 4 game | f32 | countdown, ms |
 | 25 | 4 game | f32 | arena scale (1) |
+| 27 | 4 game | varint | map seed |
+| 11 | 4 game | u8 | map flags (`terrain.js`) |
 | 29, 30 | 5 | entity id | the parent (positions are relative to it, rotated by its angle) |
 | 31 | 6 terrain chunk | sparse bytes | `[varint (index delta) ^ 1][u8]` pairs, then 1, index from 0. Bytes 0-511: the dug layer (bit set = dug); bytes 3060-3571: the reveal layer (bit set = this player can see the tile). Byte i holds tiles x = (i % 8) * 8 + bit, y = i / 8 |
 | 32, 33 | 6 terrain chunk | varint | chunk x, y (unsigned: keep the map at positive coordinates) |

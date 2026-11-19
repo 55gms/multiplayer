@@ -15,7 +15,7 @@ const HEARTBEAT_MS = 20_000;
 class Lobby {
   constructor(id) {
     this.id = id;
-    this.world = new World({ radiusTiles: 360 });
+    this.world = new World({ radiusTiles: Number(process.env.DIGDIG_ARENA_TILES) || 200 });
     this.connections = new Set();
     this.bots = new Set();
     this.world.listeners.add((e) => {

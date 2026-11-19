@@ -10,6 +10,7 @@ import { SKINS, skinAt, FACE, SPINNER } from "./skins.js";
 const WORLD_ID = 1;
 const VIEW = entityId(1);
 const ARENA = entityId(2);
+const ROLE = entityId(3);
 // Half the area a client can see, in world units (the client shows about
 // 1500 x 1050 units on a 1000 x 700 window; bigger windows zoom out).
 const VIEW_W = 1300;
@@ -283,10 +284,8 @@ export class Connection {
     }
     if (me && !me.alive && !visible.includes(me)) visible.push(me);
     for (const d of visible) {
-      const tag = d.seeker != null;
       entities.set(diggerEntity(d), {
-        // component 11 field 71 (Tag): 0 a seeker, else a hider
-        components: tag ? [0, 1, 2, 3, 7, 10, 11] : [0, 1, 2, 3, 7, 10],
+        components: [0, 1, 2, 3, 7, 10],
         fields: [
           [1, svar4(d.x)],
           [2, svar4(d.y)],
@@ -298,12 +297,15 @@ export class Connection {
           [34, str(d.name)],
           [66, rgb(rules.colorOf?.(d) || GREY)],
           [68, sparse(d.skins || [0, 0], (w, v) => w.u8(v))],
-          ...(tag ? [[71, u8(d.seeker ? 0 : 1)]] : []),
           [69, f32(d.shownScore)],
         ],
       });
     }
 
+    // Tag: an entity with component 11 while the player plays, field 71 its
+    // role (0 a seeker, else a hider); the client shows "You are a
+    // seeker/hider" for 10 s whenever it changes
+    if (rules.roundMs && me?.alive) entities.set(ROLE, { components: [11], fields: [[71, u8(me.seeker ? 0 : 1)]] });
     entities.set(VIEW, {
       components: [8],
       fields: [

@@ -1,9 +1,9 @@
-// Blue Wizard's sports games: BasketBros, SoccerBros, BaseballBros and
-// FootballBros. Each game's page in 55GMS sends the game's servers
+// Blue Wizard's sports games: BasketBros, SoccerBros, BaseballBros,
+// FootballBros and HockeyBros. Each game's page in 55GMS sends the game's servers
 // (wss://<region>.<site>/<n> and https://<region>.<site>/ping) here:
 //   /api/mp/<game>/play   the game's WebSocket
 //   /api/mp/<game>/ping   its region ping
-// The original servers are lockstep relays shared by all four games; see
+// The original servers are lockstep relays shared by all five games; see
 // README.md for what the games send and what they expect back.
 import { WebSocketServer } from "ws";
 import { acceptConnection, clientIp, rateLimiter, MAX_MESSAGE_BYTES } from "../../src/limits.js";
@@ -151,3 +151,4 @@ export const basketbros = brosGame("basketbros", duelGame());
 export const soccerbros = brosGame("soccerbros", duelGame());
 export const baseballbros = brosGame("baseballbros", duelGame());
 export const footballbros = brosGame("footballbros", lobbyGame());
+export const hockeybros = brosGame("hockeybros", lobbyGame());

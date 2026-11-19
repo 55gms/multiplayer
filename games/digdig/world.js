@@ -77,6 +77,10 @@ export class Digger {
     this.lastHitBy = null;
     this.kills = 0;
     this.spawnTick = world.tick;
+    // for the death screen
+    this.spawnedAt = Date.now();
+    this.diedAt = 0;
+    this.maxScore = 0;
   }
   get radius() {
     const r = Math.sqrt(BASE_RADIUS * BASE_RADIUS + this.score);
@@ -227,6 +231,7 @@ export class World {
 
   kill(d) {
     d.health = 0;
+    d.diedAt = Date.now();
     const killer = d.lastHitBy && d.lastHitBy.alive ? d.lastHitBy : null;
     if (killer) {
       killer.score += Math.round(d.score * 0.5) + 50;
@@ -265,6 +270,7 @@ export class World {
       if (d.input.buttons & INPUT_ATTACK) d.health -= ATTACK_DRAIN_PER_TICK;
       else d.health = Math.min(1, d.health + regen);
       if (d.health <= 0) this.kill(d);
+      if (d.alive) d.maxScore = Math.max(d.maxScore, d.shownScore);
       // big diggers slowly lose mass, so the board keeps moving
       if (d.score > 2000) d.score -= d.score * 0.0002;
     }

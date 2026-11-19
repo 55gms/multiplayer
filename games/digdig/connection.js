@@ -17,6 +17,7 @@ const diggerEntity = (d) => entityId(100 + (d.id % 20000), 1 + (Math.floor(d.id 
 const chunkEntity = (cx, cy) => entityId(30000 + cy * 135 + cx);
 
 const f32 = (v) => (w) => w.f32(v);
+const f64 = (v) => (w) => w.f64(v);
 const svar4 = (v) => (w) => w.zigzag(Math.round(v * 4));
 const varint = (v) => (w) => w.varint(v);
 const u8 = (v) => (w) => w.u8(v);
@@ -180,8 +181,21 @@ export class Connection {
       components: [8],
       fields: [
         [37, svar4(cam.x)],
-        [47, svar4(cam.y)],
-        [53, ref(me ? diggerEntity(me) : 0)],
+        // the death screen: diggers destroyed, gold, time alive (52 - 49, ms), max points
+        ...(me
+          ? [
+              [38, varint(me.kills)],
+              [41, f32(me.gold)],
+              [47, svar4(cam.y)],
+              [49, f64(me.spawnedAt)],
+              [52, f64(me.diedAt || me.spawnedAt)],
+              [53, ref(diggerEntity(me))],
+              [55, f32(Math.max(me.maxScore, me.shownScore))],
+            ]
+          : [
+              [47, svar4(cam.y)],
+              [53, ref(0)],
+            ]),
       ],
     });
 

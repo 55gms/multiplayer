@@ -27,6 +27,11 @@ export class Writer {
     b.writeFloatLE(v);
     return this.bytes(b);
   }
+  f64(v) {
+    const b = Buffer.alloc(8);
+    b.writeDoubleLE(v);
+    return this.bytes(b);
+  }
   varint(v) {
     return this.bytes(varint(v >>> 0));
   }

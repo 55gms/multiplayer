@@ -60,6 +60,36 @@ function cstring(buf, pos) {
 // The client's messages known so far, by id: how to read the payload.
 const CLIENT_MESSAGES = {
   10: (buf, pos) => [{ name: "start" }, pos],
+  1: (buf, pos) => [{ name: "play" }, pos],
+  3: (buf, pos) => [{ name: "m3" }, pos],
+  4: (buf, pos) => [{ name: "leave" }, pos], // sent when the client gives up a dead digger
+  24: (buf, pos) => [{ name: "m24" }, pos],
+  34: (buf, pos) => [{ name: "m34" }, pos],
+  21: (buf, pos) => [{ name: "m21", byte: buf[pos] }, pos + 1],
+  2: (buf, pos) => {
+    let text;
+    [text, pos] = cstring(buf, pos);
+    return [{ name: "chat", text }, pos];
+  },
+  14: (buf, pos) => {
+    let text;
+    [text, pos] = cstring(buf, pos);
+    return [{ name: "m14", text }, pos];
+  },
+  15: (buf, pos) => {
+    const parts = [];
+    for (let i = 0; i < 4; i++) {
+      let t;
+      [t, pos] = cstring(buf, pos);
+      parts.push(t);
+    }
+    return [{ name: "report", parts }, pos];
+  },
+  // login data the client keeps for its own account system: 3 strings and an f64
+  28: (buf, pos) => {
+    for (let i = 0; i < 3; i++) [, pos] = cstring(buf, pos);
+    return [{ name: "m28" }, pos + 8];
+  },
   13: (buf, pos) => {
     const platform = buf[pos++];
     let userAgent, token, language;
@@ -79,11 +109,11 @@ const CLIENT_MESSAGES = {
     const distance = buf.readFloatLE(pos + 4);
     return [{ name: "input", flags, angle: Number.isFinite(angle) ? angle : 0, distance: Number.isFinite(distance) ? distance : 0 }, pos + 8];
   },
-  23: (buf, pos) => [{ name: "m23" }, pos],
+  23: (buf, pos) => [{ name: "keepalive" }, pos], // every few seconds
   16: (buf, pos) => {
     let nickname;
     [nickname, pos] = cstring(buf, pos);
-    return [{ name: "spawn", nickname }, pos];
+    return [{ name: "nickname", nickname }, pos];
   },
 };
 

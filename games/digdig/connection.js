@@ -87,11 +87,13 @@ export class Connection {
   }
 
   onMessage(m) {
-    if (m.name === "spawn") {
+    if (process.env.DIGDIG_DEBUG && m.name !== "input") this.log("digdig_msg", { msg: JSON.stringify(m).slice(0, 200) });
+    if (m.name === "nickname") {
       this.nickname = (m.nickname || "").slice(0, 20).trim();
-      if (!this.digger || !this.digger.alive) this.spawn();
       // the client sends the name again as it settles; take it while the digger is new
-      else if (this.world.tick - this.digger.spawnTick < 40) this.digger.name = this.nickname || "Unnamed";
+      if (this.digger?.alive && this.world.tick - this.digger.spawnTick < 40) this.digger.name = this.nickname || "Unnamed";
+    } else if (m.name === "play") {
+      if (!this.digger || !this.digger.alive) this.spawn();
     } else if (m.name === "input" && this.digger?.alive) {
       const d = this.digger;
       const throttle = Math.max(0, Math.min(1, m.distance / Math.max(60, d.radius * 3)));
@@ -105,6 +107,7 @@ export class Connection {
 
   spawn() {
     this.digger = this.world.addDigger({ name: this.nickname || "Unnamed" });
+    if (process.env.DIGDIG_DEBUG) this.log("digdig_spawn", { id: this.digger.id });
     this.deadAt = 0;
   }
 

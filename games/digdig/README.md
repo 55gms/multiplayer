@@ -43,14 +43,25 @@ Answering anything with type 2 breaks the stream: it is a compressed packet.
 After `[0][varint ack]`, messages follow until the end: `[varint seq][varint id][payload]`.
 seq counts 1, 2, 3... for reliable messages. Seen so far:
 
+Messages count seq numbers even when sent unreliably (seq 0), so reliable
+seqs have gaps. Every message must be parsed to find the next; the payloads:
+
 | id | payload |
 | -- | ------- |
+| 1 | empty: Play (spawn with the last nickname) |
+| 2 | chat `string\0` |
+| 3, 24, 34 | empty, meaning unknown |
+| 4 | empty: the client gives up its dead digger (Continue) |
+| 14 | `string\0`, unknown |
+| 15 | four `string\0`: a report |
+| 21 | one byte, unknown |
+| 28 | three `string\0` and an f64: account login data |
 | 10 | empty, first message |
 | 13 | `[u8 1][user agent\0][\0][language\0]` |
-| 20 | `[00 00]` |
-| 16 | spawn: nickname `string\0` (Play; may come again with the settled name) |
+| 20 | two bytes |
+| 16 | nickname `string\0`, before Play and again as it settles |
 | 5 | input, unreliable: `[varint flags][f32 angle][f32 distance]`; flags 65536, +1 left button; angle in radians, distance in world units from the digger |
-| 23 | empty, on Space |
+| 23 | empty, every few seconds |
 
 ## Snapshot
 

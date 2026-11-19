@@ -4,7 +4,7 @@ import ducklings from "./ducklings/index.js";
 import digdig from "./digdig/index.js";
 import smashkarts from "./smashkarts/index.js";
 import kartbros from "./kartbros/index.js";
-import { basketbros, soccerbros, baseballbros, footballbros, hockeybros } from "./bros/index.js";
+import { basketbros, soccerbros, baseballbros, footballbros, hockeybros, wrestlebros, fightbros } from "./bros/index.js";
 
 export default {
   "1v1": oneVOne,
@@ -13,6 +13,8 @@ export default {
   baseballbros,
   footballbros,
   hockeybros,
+  wrestlebros,
+  fightbros,
   ducklings,
   digdig,
   smashkarts,

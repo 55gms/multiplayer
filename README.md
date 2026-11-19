@@ -5,8 +5,9 @@ One server for the multiplayer games on [55GMS](https://github.com/55gms/55GMS).
 | Game                                 | Endpoints                                                                                 | Protocol                                                                          |
 | ------------------------------------ | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | 1v1.lol                              | `/api/mp/1v1/ns` (name server), `/api/mp/1v1/master`, `/api/mp/1v1/game`                  | Photon PUN 2 (binary protocol 1.8 over WebSocket)                                 |
-| BasketBros, SoccerBros, BaseballBros | `/api/mp/<game>/play`, `/api/mp/<game>/ping` (`basketbros`, `soccerbros`, `baseballbros`) | Blue Wizard's lockstep relay (little-endian ints over WebSocket), one against one |
-| FootballBros, HockeyBros             | `/api/mp/<game>/play`, `/api/mp/<game>/ping` (`footballbros`, `hockeybros`)              | The same relay with a lobby of up to three a side                                 |
+| BasketBros, SoccerBros, BaseballBros, WrestleBros | `/api/mp/<game>/play`, `/api/mp/<game>/ping` (`basketbros`, `soccerbros`, `baseballbros`, `wrestlebros`) | Blue Wizard's lockstep server (little-endian ints over WebSocket), one against one |
+| FootballBros, HockeyBros             | `/api/mp/<game>/play`, `/api/mp/<game>/ping` (`footballbros`, `hockeybros`)              | The same server with a lobby of up to three a side                                 |
+| FightBros                            | `/api/mp/fightbros/play`, `/api/mp/fightbros/ping`                                        | The same lobby, up to four fighters, no teams                                      |
 | Ducklings.io                         | `/api/mp/ducklings/play`                                                                  | Passed through unchanged to `wss://multiplayer.ducklings.io/ws`                   |
 | digdig.io                            | `/api/mp/digdig/play`, `/api/mp/digdig/servers`                                           | M28's own protocol (`games/digdig/README.md`); the game runs here, with bots       |
 | Smash Karts                          | `/api/mp/smashkarts/ns`, `/master`, `/game`, `/remote/<ticket>`                           | Photon PUN 2 (binary protocol 1.8 over WebSocket); PLAY goes on to the official Photon cloud |
@@ -27,7 +28,7 @@ MP_DEBUG=1 node .     # also log every operation with its parameters
 - `src/server.js` routes `/api/mp/<game>/<rest>` (HTTP and websocket upgrades) to `games/<game>/index.js`
 - `src/limits.js` caps: 64 KiB per message, 120 messages/s per connection, 64 connections per IP, 60 s idle, 16 players per room
 - `src/photon/` the Photon layer any Photon game can reuse: `protocol18.js` (value codec), `codes.js` (operation, parameter and event codes), `peer.js` (framing, ping, limits)
-- `games/bros/` the five Blue Wizard sports games: `wire.js` (message bytes), `clock.js` (the shared 60 Hz tick), `duel.js` (one against one), `lobby.js` (FootballBros, HockeyBros), `index.js` (sockets, limits, the region ping)
+- `games/bros/` the seven Blue Wizard lockstep games: `wire.js` (message bytes), `clock.js` (the shared 60 Hz tick), `duel.js` (one against one), `lobby.js` (FootballBros, HockeyBros, FightBros), `index.js` (sockets, limits, the region ping)
 - `games/ducklings/` a pass-through relay to Ducklings.io's own server
 - `games/digdig/` digdig.io: the packet cipher (`cipher.js`), the client's stream and snapshots (`stream.js`, `snapshot.js`), the map (`terrain.js`, the same as the client's), the game (`world.js`), what each player is shown (`connection.js`), bots (`bots.js`) and lobbies (`index.js`). `DIGDIG_ARENA_TILES` sets the arena radius (200 tiles), `DIGDIG_DEBUG=1` logs every client message. `tools/digdig/` holds the tools that worked the protocol out
 - `games/smashkarts/` the three Photon roles for Smash Karts (copies of 1v1's `rooms.js`, `game.js` and `presence.js`, without the referee and ranked code), and `remote.js`, the relay to the official Photon cloud
@@ -52,7 +53,7 @@ What the game does, and what the server answers:
 
 `tools/capture.mjs` opens the game in headless Chromium and logs every Photon message, which is how the above was worked out: `CHROME_PATH=… node tools/capture.mjs http://localhost:8080/misc/nowgg/ --pages 2 --mp ws://localhost:8093/api/mp --click 1075,620@60 --size 640x360`. Software rendering is slow; two players on a small VM take long enough loading a map that the game may give up.
 
-## BasketBros, SoccerBros, BaseballBros, FootballBros, HockeyBros
+## BasketBros, SoccerBros, BaseballBros, FootballBros, HockeyBros, WrestleBros, FightBros
 
 Blue Wizard's games are Haxe builds that find their server from the page's own hostname: `https://<region>.<hostname>/ping` to list regions and `wss://<region>.<hostname>/<n>` to play. On 55GMS those hosts do not exist, and the originals (`*.basketbros.io`, one set of servers for all five games) are what school filters block. A script on each game page in 55GMS (`static/assets/js/bros-mp.js`) sends both to `/api/mp/<game>/ping` and `/api/mp/<game>/play` on the page's own host. Only the `EA` region answers its ping, so the game shows one server; the region in a private code is ignored.
 
@@ -73,6 +74,10 @@ Server to client, BasketBros, SoccerBros, BaseballBros (`duel.js`): nothing unti
 Server to client, FootballBros and HockeyBros (`lobby.js`): the joiner gets its own `1` (client id, team, wins, losses, perks, outfit, isYou, side, name), every other player's `1`, and each side's team as `8, -1000 - side, team`; the others get the joiner's `1`; the host gets `9`. Side and team changes go to the others as `2, id, side` and `8, id, team`, a player leaving as `3, id` (a new host gets `9`). The host's `7` sends `7` to all, every player's `1` again, then ticks: `0, frame, count, then per player id and 5 input bytes`.
 
 HockeyBros (`/api/mp/hockeybros/`) speaks exactly FootballBros's lobby protocol, read from its bundle (`MultiplayerLobby` and `MainGame.ReceiveMessage` in `HockeyBros.js`): the same join with the trailing int 2, the same lobby messages, three a side at most, and the same ticks (it reads the tick's first int as its random seed, which every player gets the same). Its title screen pings the same regions, and its old one-against-one `StartOnlineGame` path is never called, so every online game goes through the lobby.
+
+WrestleBros (`/api/mp/wrestlebros/`) is a classic one against one game: the same join, `duel.js`'s two `1`s and its ticks (`WrestleBros.js`, `NetworkCore` and `MainGame.ReceiveMessage`). Its input packs the buttons into the low bytes itself (left, right, jump, punch, down in the first, the six taunts in the second), which the duel relays as it does every game's.
+
+FightBros (`/api/mp/fightbros/`) speaks FootballBros's lobby protocol (`FightBros.js`, `OnlineLobby` and `MainGame.ReceiveMessage`) with four differences, set by `lobbyGame({ maxPlayers: 4, teams: false })`: a lobby holds four (the game only fights its first four by client id and sends any others home on start); each player's `1` carries that player's own skin where FootballBros has the side's team; sides and teams mean nothing to it (it reads and drops `2` and `8`); and its fighters, outfits and stage travel as chat lines (`#KBPICK#id,skin,5 colours,0,seq`, `#KBSTAGE#n`) that every player reads from the `NAME : text` the server sends back. Its client also sends `#KBPING#` as chat every 5 s when it has sent nothing else; the server drops that line. Input is 5 ints (left, right, jump, punch | kick << 1, down), the tick is FootballBros's, and its first int is the match's random seed.
 
 `node` with two `ws` clients is enough to try it: connect to `ws://localhost:8093/api/mp/soccerbros/play` twice, send each a join, and both start getting ticks.
 

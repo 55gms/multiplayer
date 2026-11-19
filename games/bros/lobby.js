@@ -1,6 +1,9 @@
 // FootballBros and HockeyBros: a lobby of up to six (three a side) that its host starts,
 // then the same lockstep ticks as the classic games, with one entry per
-// player instead of one per side.
+// player instead of one per side. FightBros uses the same lobby with up to
+// four fighters and no teams: each player's 1 carries their own skin, and
+// the fighters pick and the host chooses the stage through chat lines
+// ("#KBPICK#...", "#KBSTAGE#n"); its "#KBPING#" keepalive is dropped here.
 //
 // Client -> server (int32 type first):
 //   1 join   (wire.js readJoin; an int 2 follows the name)
@@ -23,7 +26,8 @@ import { Writer, cleanText, readJoin, MAX_CHAT } from "./wire.js";
 import { startTicking, stopTicking } from "./clock.js";
 
 const PER_SIDE = 3;
-const MAX_PLAYERS = PER_SIDE * 2;
+// FightBros sends this chat line every 5 s while idle, to keep its socket open.
+const KEEPALIVE_CHAT = "#KBPING#";
 const MAX_TEAM = 255;
 const SIDE_TEAM_ID = -1000;
 
@@ -33,6 +37,7 @@ let nextClientId = 200_000 + Math.floor(Math.random() * 100_000);
 class Lobby {
   constructor(game, key) {
     this.game = game;
+    this.options = game.options;
     this.key = key;
     this.players = [];
     this.teams = [0, 1];
@@ -46,7 +51,7 @@ class Lobby {
   }
 
   full() {
-    return this.players.length >= MAX_PLAYERS;
+    return this.players.length >= this.options.maxPlayers;
   }
 
   send(msg, except = null) {
@@ -58,7 +63,7 @@ class Lobby {
     return new Writer()
       .int(1)
       .int(player.clientId)
-      .int(this.teams[player.side])
+      .int(this.options.teams ? this.teams[player.side] : join.skin)
       .int(join.wins)
       .int(join.losses)
       .int(join.perks.length)
@@ -108,7 +113,7 @@ class Lobby {
     }
     if (type === 6) {
       const text = cleanText(r.bytes(Math.min(Math.max(r.int(), 0), r.left())), MAX_CHAT);
-      if (text) this.send(new Writer().int(6).int(client.side).string(`${client.join.name} : ${text}`).finish());
+      if (text && text !== KEEPALIVE_CHAT) this.send(new Writer().int(6).int(client.side).string(`${client.join.name} : ${text}`).finish());
       return;
     }
     if (this.started) return;
@@ -170,11 +175,14 @@ class Lobby {
   }
 }
 
-export function lobbyGame() {
+// maxPlayers: lobby size. teams: false sends each player's own skin in place
+// of their side's team (FightBros).
+export function lobbyGame({ maxPlayers = PER_SIDE * 2, teams = true } = {}) {
   // Open lobbies by private game number (0 = public), several per number.
   const open = new Map();
   const playing = new Set();
   const game = {
+    options: { maxPlayers, teams },
     list(lobby) {
       if (!open.has(lobby.key)) open.set(lobby.key, new Set());
       open.get(lobby.key).add(lobby);

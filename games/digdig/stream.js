@@ -69,6 +69,17 @@ const CLIENT_MESSAGES = {
     return [{ name: "client", platform, userAgent, token, language }, pos];
   },
   20: (buf, pos) => [{ name: "m20", bytes: [buf[pos], buf[pos + 1]] }, pos + 2],
+  // mouse/keys, sent unreliably every packet: [varint flags][f32 angle][f32 distance]
+  // flags: 65536 always, 1 left button
+  5: (buf, pos) => {
+    let flags;
+    [flags, pos] = readVarint(buf, pos);
+    if (pos + 8 > buf.length) return [{ name: "input", flags, angle: 0, distance: 0 }, buf.length];
+    const angle = buf.readFloatLE(pos);
+    const distance = buf.readFloatLE(pos + 4);
+    return [{ name: "input", flags, angle: Number.isFinite(angle) ? angle : 0, distance: Number.isFinite(distance) ? distance : 0 }, pos + 8];
+  },
+  23: (buf, pos) => [{ name: "m23" }, pos],
   16: (buf, pos) => {
     let nickname;
     [nickname, pos] = cstring(buf, pos);

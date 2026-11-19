@@ -1,4 +1,4 @@
-// FootballBros: a lobby of up to six (three a side) that its host starts,
+// FootballBros and HockeyBros: a lobby of up to six (three a side) that its host starts,
 // then the same lockstep ticks as the classic games, with one entry per
 // player instead of one per side.
 //

@@ -1,5 +1,5 @@
 // Byte layout shared by Blue Wizard's sports games (BasketBros, SoccerBros,
-// BaseballBros, FootballBros). They are Haxe builds: every message is one
+// BaseballBros, FootballBros, HockeyBros). They are Haxe builds: every message is one
 // binary WebSocket frame of little-endian int32s, bytes and raw strings,
 // starting with an int32 message type. See README.md for each message.
 
@@ -80,10 +80,10 @@ export function cleanText(bytes, max) {
 }
 
 // The join message (type 1) every game sends when its socket opens:
-//   int skin (team index in BaseballBros/FootballBros), int wins, int losses,
+//   int skin (team index in BaseballBros/FootballBros/HockeyBros), int wins, int losses,
 //   int perkCount, perkCount bytes, 6 outfit bytes, 4 ints of the player's
 //   guid, int privateGameNumber (0 = public), raw name bytes to the end
-//   (FootballBros adds an int 2 after the name).
+//   (FootballBros and HockeyBros add an int 2 after the name).
 // The server echoes everything up to the guid to the other players as is.
 export function readJoin(r, { trailingInt = false } = {}) {
   const skin = r.int();

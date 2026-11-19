@@ -6,6 +6,19 @@ the protocol. It was worked out against client build
 `2749f7bafff1e95846c87486cda9d7184c0a06bf` (`static.digdig.io/<hash>/client.{js,wasm}`).
 A new build may change any of the constants below.
 
+## Modes
+
+The mode buttons ask `api.n.m28.io/endpoint/digdig-<mode>/findEach/` with mode
+`ffa`, `teams`, `tag`, `br` or `maze`. The 55GMS page sends that on as
+`/api/mp/digdig/servers?mode=<mode>`, the answer's server id is the mode, and the
+client then opens `wss://<mode>.s.m28n.net/`, which the page sends to
+`/api/mp/digdig/play?mode=<mode>`. Each mode gets its own lobbies (`modes.js`).
+
+Done: FFA, Battle Royale (rounds, countdown, shrinking arena, winner). TDM, Tag
+and Maze play as FFA. Not found yet: how a digger gets a team colour, the client
+flag (byte 10 of the game object at 331776, 0 in every mode so far) that turns on
+the Tag HUD, and the maze the client draws for map flag 16.
+
 ## Finding the server
 
 The client asks `https://api.n.m28.io/endpoint/digdig-ffa/findEach/` (also
@@ -127,6 +140,15 @@ values are interpolated over ~120 ms when they change):
 | 37, 47 | 8 view | svarint/4 | camera x, y |
 | 53 | 8 view | entity id | the entity the client plays as |
 | 69 | 10 digger | f64 | score |
+| 24 | 4 game | varint | diggers needed, shown as "Waiting for players (field 16/field 24)" |
+| 35 | 8 view | u8 | bit 8: "YOU HAVE WON" (set at spawn, it keeps the client in the menu) |
+| 38 | 8 view | varint | death screen: diggers destroyed |
+| 41 | 8 view | f32 | death screen: gold collected (shown when above 0) |
+| 49, 52 | 8 view | f64 | spawn and death time, ms; the death screen shows Time Alive = 52 - 49 |
+| 55 | 8 view | f32 | death screen: Max Points |
+| 19 | 4 game | f64 | Tag: ms into the round; "Game restarting" counts down from 300000 |
+| 62, 63 | 9 | rgb, bit | unknown; a colour and a flag (did not change how a digger is drawn) |
+| 71 | 11 | u8 | Tag: 0 shows "You are a seeker", else "You are a hider" (only with the client's Tag HUD on, see below) |
 
 Components 4 and 12 belong to the world, not to the entity (one of each).
 

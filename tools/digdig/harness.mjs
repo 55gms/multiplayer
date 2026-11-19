@@ -57,6 +57,14 @@ await ctx.addInitScript(() => {
   const b = WebAssembly.instantiateStreaming;
   if (b) WebAssembly.instantiateStreaming = (...x) => b.apply(WebAssembly, x).then(keep);
 });
+// Probe hits are batched to the console as "PROBE tag value extra" lines.
+await ctx.addInitScript(() => {
+  let q = [];
+  window.__ddprobe = (a, b, c) => {
+    q.push(`${a} ${b} ${c}`);
+    if (q.length === 1) setTimeout(() => { console.log("PROBE " + q.join("\nPROBE ")); q = []; }, 0);
+  };
+});
 const page = await ctx.newPage();
 const t0 = Date.now();
 const log = (...a) => console.log(String(Date.now() - t0).padStart(6), ...a);
@@ -67,8 +75,15 @@ await ctx.route(/./, async (r) => {
   const u = new URL(r.request().url());
   if (u.hostname === "digdig.io" && u.pathname === "/") return r.fulfill({ contentType: "text/html", body: fs.readFileSync(path.join(CLIENT, "index.html")) });
   if (u.hostname === "static.digdig.io") {
-    const f = path.join(CLIENT, path.basename(u.pathname));
+    let f = path.join(CLIENT, path.basename(u.pathname));
+    // DD_WASM serves a patched client (tools/digdig/patch.py) in place of the real one
+    if (f.endsWith(".wasm") && process.env.DD_WASM) f = path.resolve(process.env.DD_WASM);
     const type = f.endsWith(".wasm") ? "application/wasm" : f.endsWith(".js") ? "text/javascript" : "font/ttf";
+    if (f.endsWith("client.js")) {
+      // EM_ASM code 999000 is the probes' way out: (tag, value, extra)
+      const js = fs.readFileSync(f, "utf8").replace("117689:(a,b,c)=>", "999000:(a,b,c)=>{window.__ddprobe&&window.__ddprobe(a,b,c);return 0},117689:(a,b,c)=>");
+      return r.fulfill({ body: js, contentType: type });
+    }
     if (fs.existsSync(f)) return r.fulfill({ body: fs.readFileSync(f), contentType: type });
   }
   if (u.hostname === "api.n.m28.io") {
@@ -124,6 +139,7 @@ if (handler.breaks) {
       if (fn) {
         await fn({
           frame,
+          frames: ev.callFrames,
           // wasm locals by index: params first, then declared locals
           async locals(...idx) {
             const expression = `[${idx.map((i) => `$var${i}.value`).join(",")}]`;

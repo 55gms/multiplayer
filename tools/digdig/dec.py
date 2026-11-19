@@ -142,7 +142,7 @@ class Dec:
             self.labels.append(lab)
             self.w(d, f'{op} {lab} {{')
             self.body(args, d + 1)
-            self.w(d, '}')
+            self.w(d, f'}} // end {lab}')
             self.labels.pop()
         elif op == 'if':
             lab = f'@{len(self.labels) + 1}'

@@ -81,6 +81,20 @@ followed by its value; a raw 1 ends the list. Field indexes 2 to 87, by componen
 | 11 | 71, 72 |
 | 12 | 73 to 87 |
 
+## Getting into the game
+
+The world id (the varint after the type byte of a snapshot) must stay the same:
+a larger one makes the client throw its whole state away. The client's hello
+(messages 10, 13, 20) needs an ack in the snapshots, and Play sends message 16
+with the nickname. The client then waits on "Connecting" until:
+
+- an entity has component 8 (the first one created is the client's own view), and
+- its field 53 (an entity id) names an entity with component 10, and
+- that entity's component 1 field 5 (health, f32) is above 0.
+
+Entity components set bits in the entity: +57 bit 1 is component 0, 2 is 1, 4 is 2,
+8 is 3, 16 is 4, 64 is 6, 128 is 7; +58 bit 1 is component 8, 2 is 9, 4 is 10, 8 is 11.
+
 ## Tools
 
 `tools/digdig/` holds what found all this: `harness.mjs` runs the real client in

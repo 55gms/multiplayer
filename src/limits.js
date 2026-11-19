@@ -2,7 +2,7 @@
 
 export const MAX_MESSAGE_BYTES = 64 * 1024;
 export const IDLE_MS = 60_000;
-export const MAX_ROOM_PLAYERS = 16;
+export const MAX_ROOM_PLAYERS = 24; // Smash Karts private games hold 24
 // High because a whole school often shares one public address; each player
 // holds one or two connections at a time.
 export const MAX_CONNECTIONS_PER_IP = 64;

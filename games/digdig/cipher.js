@@ -59,7 +59,7 @@ export class ClientCipher {
     return { type, body };
   }
 
-  // The client's own direction, for tools that speak as a client.
+  // The client's own direction, for tools that act as a client.
   seal(type, body) {
     const out = Buffer.allocUnsafe(body.length + 1);
     out[0] = TYPE_TO_WIRE[type];
@@ -71,5 +71,70 @@ export class ClientCipher {
     this.state = nextState(this.state);
     for (let i = 0; i < body.length; i++) out[i + 1] = body[i] ^ key[i % 7];
     return out;
+  }
+}
+
+// The server's direction uses the same key and step, from its own state, but the
+// type byte goes through one of three permutations picked by state % 3. Wire bytes
+// in SERVER_RAW pass through untouched (body too) and leave the state alone; type 0
+// is the disconnect.
+const SERVER_WIRE_TO_TYPE = [
+  [
+    0, 13, 16, 67, 4, 87, 86, 33, 38, 51, 99, 77, 56, 3, 12, 15, 14, 62, 90, 46, 84, 36, 65, 70, 83, 61, 76, 19, 11, 96, 42,
+    22, 74, 31, 34, 89, 1, 37, 88, 30, 18, 24, 93, 98, 43, 52, 55, 59, 8, 20, 66, 60, 79, 53, 6, 73, 2, 80, 58, 10, 81, 75,
+    26, 82, 64, 97, 35, 27, 40, 69, 25, 49, 45, 9, 32, 5, 17, 28, 95, 91, 78, 72, 85, 41, 71, 63, 29, 47, 68, 50, 48, 21, 7,
+    39, 44, 57, 92, 23, 94, 54,
+  ],
+  [
+    0, 55, 14, 9, 4, 86, 22, 25, 68, 79, 7, 83, 2, 73, 56, 37, 12, 93, 8, 81, 76, 19, 5, 59, 82, 99, 30, 60, 24, 97, 20, 75,
+    74, 61, 34, 98, 46, 69, 40, 49, 48, 63, 84, 78, 80, 13, 72, 96, 88, 26, 44, 91, 3, 53, 31, 45, 16, 50, 58, 92, 21, 54,
+    39, 28, 64, 87, 43, 51, 90, 15, 10, 62, 1, 52, 32, 6, 42, 41, 35, 67, 66, 36, 11, 85, 17, 77, 65, 29, 18, 94, 38, 27,
+    70, 71, 57, 89, 23, 47, 95, 33,
+  ],
+  [
+    0, 45, 56, 79, 4, 65, 5, 99, 90, 67, 25, 85, 14, 52, 16, 69, 2, 71, 68, 36, 42, 81, 86, 92, 11, 33, 20, 21, 82, 47, 76,
+    6, 32, 54, 34, 95, 72, 15, 48, 26, 88, 28, 17, 35, 66, 73, 1, 23, 18, 30, 80, 27, 9, 53, 75, 13, 12, 44, 58, 70, 19, 31,
+    49, 24, 64, 29, 78, 91, 38, 37, 7, 39, 55, 3, 74, 22, 84, 63, 98, 51, 43, 46, 83, 77, 93, 41, 87, 97, 8, 57, 40, 60, 10,
+    62, 50, 94, 59, 96, 89, 61,
+  ],
+];
+const SERVER_TYPE_TO_WIRE = SERVER_WIRE_TO_TYPE.map((p) => {
+  const inv = new Array(100);
+  p.forEach((t, w) => (inv[t] = w));
+  return inv;
+});
+export const SERVER_RAW = new Set([0, 4, 64]);
+export const SERVER_INITIAL_STATE = 0x09bc0703;
+
+export class ServerCipher {
+  constructor(state = SERVER_INITIAL_STATE) {
+    this.state = state;
+  }
+
+  seal(type, body = Buffer.alloc(0)) {
+    const out = Buffer.allocUnsafe(body.length + 1);
+    if (SERVER_RAW.has(type)) {
+      out[0] = type;
+      body.copy(out, 1);
+      return out;
+    }
+    out[0] = SERVER_TYPE_TO_WIRE[this.state % 3][type];
+    const key = keyFor(this.state);
+    this.state = nextState(this.state);
+    for (let i = 0; i < body.length; i++) out[i + 1] = body[i] ^ key[i % 7];
+    return out;
+  }
+
+  // What the client does with a server packet, for tools that act as a client.
+  open(packet) {
+    if (!packet.length) return null;
+    if (SERVER_RAW.has(packet[0])) return { type: packet[0], body: Buffer.from(packet.subarray(1)) };
+    if (packet[0] >= 100) return null;
+    const type = SERVER_WIRE_TO_TYPE[this.state % 3][packet[0]];
+    const key = keyFor(this.state);
+    this.state = nextState(this.state);
+    const body = Buffer.allocUnsafe(packet.length - 1);
+    for (let i = 0; i < body.length; i++) body[i] = packet[i + 1] ^ key[i % 7];
+    return { type, body };
   }
 }

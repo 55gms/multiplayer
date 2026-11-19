@@ -26,7 +26,9 @@ class Lobby {
   constructor(id, mode) {
     this.id = id;
     this.mode = mode;
-    this.world = new World({ radiusTiles: Number(process.env.DIGDIG_ARENA_TILES) || 200 });
+    // Maze: map flag 16, bedrock walls the client draws from the seed (maze.js)
+    this.world = new World({ radiusTiles: Number(process.env.DIGDIG_ARENA_TILES) || 200, flags: mode === "maze" ? 16 : 0 });
+    log("digdig_lobby_start", { lobby: id, mode, seed: this.world.seed >>> 0 });
     this.connections = new Set();
     this.bots = new Set();
     this.world.listeners.add((e) => {

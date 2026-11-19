@@ -5,6 +5,8 @@
 // Tiles are 16 world units. material(x, y) gives the tile at tile coordinates
 // x, y for a map seed (component 4 field 27) and map flags (field 11).
 
+import { mazeOpen } from "./maze.js";
+
 const f = Math.fround;
 
 // Perlin's permutation as the client has it (memory 48608, stored twice there).
@@ -79,11 +81,12 @@ export const FLAG_NO_BIG_VEINS = 1;
 export const FLAG_NO_ROCK_PATCHES = 2;
 export const FLAG_NO_MATERIAL_2 = 4;
 export const FLAG_NO_MATERIAL_9 = 8;
-export const FLAG_MAZE = 16; // not supported yet
+export const FLAG_MAZE = 16; // walls of bedrock outside the maze (maze.js)
 
 // Tile material at tile coordinates x, y. 3 is plain dirt; the others are worked
 // out from how the client draws them (see README.md).
 export function material(x, y, seed, flags = 0) {
+  if (flags & FLAG_MAZE && !mazeOpen(x, y, seed)) return 5;
   const s = seed & 255;
   const n = (sx, sy, z) => noise(f(x * sx), f(y * sy), z, s);
   if (!(flags & FLAG_NO_BIG_VEINS)) {

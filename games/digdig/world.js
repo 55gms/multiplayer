@@ -58,11 +58,12 @@ export class Chunk {
 let nextDiggerId = 1;
 
 export class Digger {
-  constructor(world, { name, bot = false }) {
+  constructor(world, { name, bot = false, squad = null }) {
     this.id = nextDiggerId++;
     this.world = world;
     this.name = name;
     this.bot = bot;
+    this.squad = squad;
     this.x = 0;
     this.y = 0;
     this.angle = 0;
@@ -316,9 +317,9 @@ export class World {
     this.digAround(d);
   }
 
-  // on the same side: they push each other but do no damage
+  // on the same side (a team, a squad): they push each other but do no damage
   friends(a, b) {
-    return a.team != null && a.team === b.team;
+    return (a.team != null && a.team === b.team) || (a.squad != null && a.squad === b.squad);
   }
 
   solidAhead(d) {

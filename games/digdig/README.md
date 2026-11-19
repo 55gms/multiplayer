@@ -17,8 +17,7 @@ client then opens `wss://<mode>.s.m28n.net/`, which the page sends to
 Done: FFA; Battle Royale (rounds, countdown, shrinking arena, winner); TDM
 (three teams in M28's colours, component 10 field 66, no damage between
 teammates); Tag (5-minute rounds, seekers red, a tag turns a hider into a seeker;
-the role entity below); Maze (map flag 16, `maze.js`). Not done: squads (see
-below).
+the role entity below); Maze (map flag 16, `maze.js`); squads (below).
 
 Tag's "You are a seeker/hider" banner needs byte 10 of the game object at 331776
 set, and no server message sets it that we know of; the 55GMS page sets it in
@@ -75,12 +74,12 @@ Server messages (type 5), handled by client f1392:
 | -- | ------- |
 | 6 | empty: sign out (the client forgets its saved login) |
 | 12 | five strings and an f64 (`s s s f64 s s`): a new saved login, stored as id, provider, token, display name, expiry, avatar |
-| 18 | `[varint request][string code]`: the squad the client asked for (state "Creating..." to the code) |
+| 18 | `[varint request][string]`: why a squad request failed, shown in the Squad panel |
 | 19 | string: stored as localStorage `cp6_player_id` |
 | 22 | varint: an achievement's "+N gold" popup |
 | 25 | `[u32 entity][u8]`: a mark on an entity, unknown |
-| 26 | empty, unknown (runs once) |
-| 27 | `[varint request][string code]`: the squad the client asked to join |
+| 26 | empty: squads work here (the Squad panel waits for it) |
+| 27 | `[varint request][string]`: why joining a squad failed, e.g. "Squad doesn't exist" |
 
 Answering anything with type 2 breaks the stream: it is a compressed packet.
 
@@ -98,6 +97,8 @@ seqs have gaps. Every message must be parsed to find the next; the payloads:
 | 2 | shop Buy: the skin id `string\0` (digdig.io has no chat) |
 | 7 | `[varint request]`: a squad (opening the Squad panel, Find Public) |
 | 9 | `[varint request]`: a new squad (New) |
+| 17 | `[u8]`: the Squad panel's Public box |
+| 32 | `[varint request][string code]`: join a squad |
 | 3, 24, 34 | empty, meaning unknown |
 | 4 | empty: the client gives up its dead digger (Continue) |
 | 14 | `string\0`, unknown |
@@ -222,16 +223,31 @@ players". Component 8 fields 37 and 47 move the camera.
 Entity components set bits in the entity: +57 bit 1 is component 0, 2 is 1, 4 is 2,
 8 is 3, 16 is 4, 64 is 6, 128 is 7; +58 bit 1 is component 8, 2 is 9, 4 is 10, 8 is 11.
 
-## Squads (not done)
+## Squads
 
-Opening the Squad panel sends message 7, New message 9, both with a request
-number the client counts up; message 18 with that number and a code answers
-them. Codes are `<server id>-<code>` with at least 6 characters after the dash.
-Join reconnects to `<server id>.s.m28n.net` and sends its request only once the
-client's current server id matches; with byte 8 of the game object set the
-client takes that id from a string in its world object (offset 24) which stays
-empty, so Join waits on "Loading.." forever. What fills it, the join message,
-and how members are shown are not known.
+`squads.js`; up to four players, in FFA, TDM and Maze (the modes the client's
+server list gives `"squads": "4"`). Client messages: 7 `[varint request]` (a
+squad: sent when the Squad panel opens without one, and by Find Public), 9
+`[varint request]` (New), 32 `[varint request][code]` (Join; the code without
+its server part, lowercased), 17 `[u8]` (the Public box). Server message 26
+(empty) must come first: without it the panel never shows a squad.
+
+The squad is an entity with component 9: four slots each of status (56: 0
+empty, 1 in the menu, 2 playing), face (59), name (60) and digger (61, an
+entity id); 57 the code, 63 public, 58 a list of u32 we leave out, 62 a colour.
+A request has worked once 57 changes (Join: once it is the code typed), and
+the panel then shows the slots and "Code: <server id>-<57>". Server messages
+18 and 27 `[varint request][text]` answer a failed request (create, join) with
+a text the panel shows instead, such as "Squad doesn't exist".
+
+Join compares the code's server part with the server the client is on, which
+it keeps as a string in its world object (offset 24 of the object at 331776 +
+544) that nothing the server sends fills; the 55GMS page writes it (our server
+ids are the modes). A code of another mode makes the client look its server up
+(`api.n.m28.io/server/<id>`, answered by `/api/mp/digdig/server?id=`) and
+reconnect before it joins. Members share a lobby, cannot hurt each other, see
+around each other, are always in each other's snapshots (the in-game squad
+list shows their health), and play on one team in TDM.
 
 ## Maze
 

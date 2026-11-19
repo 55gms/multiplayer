@@ -142,6 +142,9 @@ export class TeamDeathmatch extends FreeForAll {
     super(lobby);
     this.world = lobby.world;
     this.world.onAdd = (d) => {
+      // a squad plays on one team
+      const mate = d.squad && [...this.world.diggers.values()].find((o) => o !== d && o.squad === d.squad && o.team != null);
+      if (mate) return void (d.team = mate.team);
       const counts = TEAM_COLORS.map(() => 0);
       for (const o of this.world.diggers.values()) if (o !== d && o.team != null) counts[o.team]++;
       d.team = counts.indexOf(Math.min(...counts));

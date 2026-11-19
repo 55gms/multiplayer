@@ -8,6 +8,7 @@ One server for the multiplayer games on [55GMS](https://github.com/55gms/55GMS).
 | BasketBros, SoccerBros, BaseballBros | `/api/mp/<game>/play`, `/api/mp/<game>/ping` (`basketbros`, `soccerbros`, `baseballbros`) | Blue Wizard's lockstep relay (little-endian ints over WebSocket), one against one |
 | FootballBros                         | `/api/mp/footballbros/play`, `/api/mp/footballbros/ping`                                  | The same relay with a lobby of up to three a side                                 |
 | Ducklings.io                         | `/api/mp/ducklings/play`                                                                  | Passed through unchanged to `wss://multiplayer.ducklings.io/ws`                   |
+| Smash Karts                          | `/api/mp/smashkarts/ns`, `/master`, `/game`, `/remote/<ticket>`                           | Photon PUN 2 (binary protocol 1.8 over WebSocket); PLAY goes on to the official Photon cloud |
 
 `GET /api/mp/health` reports the games and open connections. Every minute the server logs one `stats` line (connections, rooms, players, bytes).
 
@@ -26,6 +27,7 @@ MP_DEBUG=1 node .     # also log every operation with its parameters
 - `src/photon/` the Photon layer any Photon game can reuse: `protocol18.js` (value codec), `codes.js` (operation, parameter and event codes), `peer.js` (framing, ping, limits)
 - `games/bros/` the four Blue Wizard sports games: `wire.js` (message bytes), `clock.js` (the shared 60 Hz tick), `duel.js` (one against one), `lobby.js` (FootballBros), `index.js` (sockets, limits, the region ping)
 - `games/ducklings/` a pass-through relay to Ducklings.io's own server
+- `games/smashkarts/` the three Photon roles for Smash Karts (copies of 1v1's `rooms.js`, `game.js` and `presence.js`, without the referee and ranked code), and `remote.js`, the relay to the official Photon cloud
 - `games/1v1/` the three Photon roles over one in-memory room registry (`rooms.js`), 55GMS accounts (`accounts.js`) and the match referee (`referee.js`)
 
 ## 1v1.lol
@@ -73,6 +75,27 @@ Server to client, FootballBros (`lobby.js`): the joiner gets its own `1` (client
 Ducklings.io's server still runs, but the game can no longer reach it from 55GMS: the address in the game, `wss://ducklings.io/ws`, now redirects to `wss://multiplayer.ducklings.io/ws` (browsers do not follow redirects for WebSockets), that server answers 401 to any `Origin` but `https://ducklings.io`, and filters block the domain. An inline script in the game's page on 55GMS (`static/misc/ducklings-io/index.html`) sends any `ducklings.io` WebSocket to `/api/mp/ducklings/play`. For each connection there, `games/ducklings/index.js` opens one to the real server with `Origin: https://ducklings.io` and passes frames both ways unchanged; when either side closes, so does the other. Frames the game sends before the real server answers wait (64 at most).
 
 The server only does matchmaking and WebRTC signalling (JSON text frames such as `ping`, rooms, offers, ICE candidates, `turnCredentials`). A match itself runs between the players' browsers over WebRTC data channels, directly or through the game's TURN server, so it never passes through here; on a network that blocks that, players find a room and then fail to connect to each other. Every player reaches the real server from this box's address.
+
+## Smash Karts
+
+Tall Team's Unity WebGL game plays on Photon PUN 2 (app `32cef7fc-…`, name server `wss://ns.photonengine.io:19093`). The page in 55GMS (`static/misc/smashkarts/index.html`) wraps `WebSocket` so that name-server address becomes `/api/mp/smashkarts/ns` on the page's own host; our name server then hands out our own master and game servers. For local work set `localStorage["gms-mp-base"] = "ws://localhost:8093/api/mp"` on the 55GMS page.
+
+What the game does:
+
+- Login: custom authentication. The game sends its Firebase ID token to the name server (parameter 214, a Photon-encoded dictionary) with the Firebase uid as the user id (225), and Photon's cloud checks the token with a webhook. Here any login is accepted and the player is `fb:<uid>`, taken as given (it only names a seat in a room). Every login is remembered for 30 minutes (`remote.js`) so the player can be passed on to the cloud.
+- PLAY: one `JoinRandomGame` on the master that is also "or create": `GameProperties` (248) are the properties to match (`gm` mode, `wm` weapons, `gv` version, `mm`, `gl` arena, max players), `Properties` (251) and the other room options are what to create with, and the room name (255) is the name to give it. The master answers with a room name and a game server address, never "no match found". The player then joins it on the game server with `JoinGame` and create-if-not-exists.
+- Create / Join (private games and parties): `JoinGame` on the master with room name `us<6 digits>` (the code), lobby `pvt`, join mode create-if-not-exists for the creator and default for whoever types the code. Up to 24 players.
+- AppStats after the master login: 227 players on the master, 228 rooms, 229 players. The game throws a `NullReferenceException` without all three.
+
+Matchmaking here, in order:
+
+1. a room on this server that matches (`Room.matches`, as Photon) and has space;
+2. the official Photon cloud, with the player's own login: the name-server Authenticate frame is replayed to `ns.photonengine.io`, the master gets the token that answers, and the player's master connection then passes through to it. The game server address it answers with becomes `/api/mp/smashkarts/remote/<ticket>` (the client adds `/?libversion=…` to the address, so the ticket is a path segment, not a query), which relays the connection frame for frame and rewrites only the first Authenticate to carry the cloud's token and user id. Only `*.exitgames.com` and `*.photonengine.io` are dialled. `MP_SK_REMOTE=off` turns this off, `MP_SK_APP_ID` and `MP_SK_REMOTE_NS` change the app and name server;
+3. a new room here, if the cloud cannot be reached.
+
+Private games and parties never go to the cloud: a code is looked up in this server's rooms, and a code that is not here answers "Game does not exist". Because PLAY looks for a room here first and leaves for the cloud when it finds none, rooms here are mostly private ones.
+
+All game logic stays in the clients (the master client decides), so `game.js` only relays, as for 1v1.lol. There are no 55GMS accounts, results or ranks: names and progress are Smash Karts' own (Firebase), and the Firebase sign-in works from 55GMS's domain because the game's own page treats unknown hosts like a portal.
 
 ## Production
 

@@ -10,6 +10,7 @@ One server for the multiplayer games on [55GMS](https://github.com/55gms/55GMS).
 | Ducklings.io                         | `/api/mp/ducklings/play`                                                                  | Passed through unchanged to `wss://multiplayer.ducklings.io/ws`                   |
 | digdig.io                            | `/api/mp/digdig/play`, `/api/mp/digdig/servers`                                           | M28's own protocol (`games/digdig/README.md`); the game runs here, with bots       |
 | Smash Karts                          | `/api/mp/smashkarts/ns`, `/master`, `/game`, `/remote/<ticket>`                           | Photon PUN 2 (binary protocol 1.8 over WebSocket); PLAY goes on to the official Photon cloud |
+| Kart Bros                            | `/api/mp/kartbros/play`, `/api/mp/kartbros/ping`                                          | Blue Wizard's session server (MemoryPack frames over WebSocket): lobbies, host, relay |
 
 `GET /api/mp/health` reports the games and open connections. Every minute the server logs one `stats` line (connections, rooms, players, bytes).
 
@@ -30,6 +31,7 @@ MP_DEBUG=1 node .     # also log every operation with its parameters
 - `games/ducklings/` a pass-through relay to Ducklings.io's own server
 - `games/digdig/` digdig.io: the packet cipher (`cipher.js`), the client's stream and snapshots (`stream.js`, `snapshot.js`), the map (`terrain.js`, the same as the client's), the game (`world.js`), what each player is shown (`connection.js`), bots (`bots.js`) and lobbies (`index.js`). `DIGDIG_ARENA_TILES` sets the arena radius (200 tiles), `DIGDIG_DEBUG=1` logs every client message. `tools/digdig/` holds the tools that worked the protocol out
 - `games/smashkarts/` the three Photon roles for Smash Karts (copies of 1v1's `rooms.js`, `game.js` and `presence.js`, without the referee and ranked code), and `remote.js`, the relay to the official Photon cloud
+- `games/kartbros/` Kart Bros's session server: `wire.js` (frames, MemoryPack, the message ids and fields) and `index.js` (sessions, members, host, relay)
 - `games/1v1/` the three Photon roles over one in-memory room registry (`rooms.js`), 55GMS accounts (`accounts.js`) and the match referee (`referee.js`)
 
 ## 1v1.lol
@@ -100,6 +102,24 @@ Matchmaking here, in order:
 Private games and parties never go to the cloud: a code is looked up in this server's rooms, and a code that is not here answers "Game does not exist". Because PLAY looks for a room here first and leaves for the cloud when it finds none, rooms here are mostly private ones.
 
 All game logic stays in the clients (the master client decides), so `game.js` only relays, as for 1v1.lol. There are no 55GMS accounts, results or ranks: names and progress are Smash Karts' own (Firebase), and the Firebase sign-in works from 55GMS's domain because the game's own page treats unknown hosts like a portal.
+
+## Kart Bros
+
+Kart Bros (Unity 6, network version 2.17) finds its servers at `wss://kart{da,ea,eu,mw,we}.kartbros.io/<n>` and pings `https://kart<xx>.kartbros.io/ping`, all hard-coded. An inline script in its 55GMS page (`static/misc/kart-bros/index.html`) sends the socket to `/api/mp/kartbros/play` and the pings to `/api/mp/kartbros/ping` on the page's host; only `DA` answers, so the game picks "US Dallas". Nothing goes to Blue Wizard's servers.
+
+The original server is a relay with a lobby, not a game server: the host's game runs the race (karts, bots, items) and streams it, and the server keeps the sessions and passes each member's frames to the others. This one does the same. The protocol was read from the build (the message structs and their fields from `global-metadata.dat`, the ids from the registered names) and checked against captures of the original server.
+
+Frames (`wire.js`): a client sends one frame per WebSocket message; the server sends one or more, each prefixed with its uint16 length. The first byte is the kind: `1` for the server, `2` from the server, `3` for every other member, `4` the game's own RPCs (item boxes, projectiles; their own serializer) for every other member, `0` unsequenced state for the others (the host's world state, ~30 a second), `5` a relayed frame (`[5][sender][host epoch][the sender's frame]`), and `6` wraps any of them with a uint32 sequence number, counted per direction and per member. A message is `[kind][id][MemoryPack payload]`, the id being FNV-1a of its registered name (`session_joined`).
+
+What the server does:
+
+- `protocol_hello`, `client_capabilities`: nothing to answer.
+- `create_session` carries the code the client made up (`DA` and six hex digits; the three words on screen are the same number). The creator is player 0 and host, and gets `session_host_state` (host 0, epoch 1, capabilities 7), `session_resume_token`, `session_created` and `session_roles`.
+- `join_session` by code: up to six players, then up to eight spectators, else `session_full`; an unknown code gets `invalid_session`. The joiner gets the same first two, then `session_joined` with every member, then `session_roles`; the others get `client_joined`. A player who joins mid-race waits for the next one.
+- Kinds `0`, `3` and `4` are passed on stamped with the sender's id and the host epoch. The lobby (settings, rules, cup, ready, player info, chat), the race setup (`game_config`, `config_received`, `intro_seq_complete`) and the race itself are all messages between the members.
+- Kind `1` messages the server does not handle itself (the host's `race_start_roster`) go back to every member as they came, the sender included, as the original does. `race_start_roster` from the host marks the race as running for anyone who joins. The host's `race_countdown_start` comes with zero times: the server sets `serverTime` to its clock (Unix seconds) and `startTime` one second later, and sends it to everyone the same way.
+- Leaving or dropping: `client_disconnected` to the rest; if the host left, the lowest remaining player becomes host (`host_changed`, epoch + 1, reason HostLeft). `host_transfer_request` (MAKE HOST) and `host_claim` (only once the host is gone), `set_member_role` (player or spectator; refused mid-race, when seats are full, or for the last player) and `member_away_report` are kept here too. Rejoining a dropped session (`resume_session`) is refused (`RoomGone`); the player joins again with the code.
+- `ping` gets `pong`.
 
 ## Production
 

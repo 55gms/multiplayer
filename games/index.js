@@ -3,6 +3,7 @@ import oneVOne from "./1v1/index.js";
 import ducklings from "./ducklings/index.js";
 import digdig from "./digdig/index.js";
 import smashkarts from "./smashkarts/index.js";
+import kartbros from "./kartbros/index.js";
 import { basketbros, soccerbros, baseballbros, footballbros, hockeybros } from "./bros/index.js";
 
 export default {
@@ -15,4 +16,5 @@ export default {
   ducklings,
   digdig,
   smashkarts,
+  kartbros,
 };

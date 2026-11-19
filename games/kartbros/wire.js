@@ -75,6 +75,7 @@ const SCHEMAS = {
   lobby_ready: [["playerId", "byte"], ["ready", "bool"]],
   player_info: [["playerId", "byte"], ["playerName", "string"], ["broId", "string"], ["flagId", "string"], ["networkVersion", "string"]],
   member_retired: [["playerId", "byte"]],
+  rematch_triggered: [["hostPlayerId", "byte"]],
   race_start_refused: [["reason", "byte"]],
   race_start_expired: [],
 };

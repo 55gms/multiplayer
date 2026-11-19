@@ -12,7 +12,7 @@ import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import { acceptConnection, clientIp, rateLimiter, MAX_MESSAGE_BYTES } from "../../src/limits.js";
 import { log } from "../../src/log.js";
-import { NAME, decode, serverFrame, clientFrame, sequenced, relayed, pack } from "./wire.js";
+import { ID, NAME, decode, serverFrame, clientFrame, sequenced, relayed, pack } from "./wire.js";
 
 const HEARTBEAT_MS = 20_000;
 const MAX_BUFFERED = 1024 * 1024;
@@ -26,6 +26,10 @@ const SESSION_CAPABILITIES = 7;
 const CODE = /^[A-Z0-9]{4,16}$/;
 const MAX_TEXT = 40;
 const COUNTDOWN_LEAD_S = 1;
+// After the first racer finishes, the rest get this long ("You have 30s to finish!").
+const FINISH_TIMEOUT_S = 30;
+// How long the host gets to answer request_race_order when time runs out.
+const RACE_ORDER_WAIT_MS = 5000;
 
 // Enums from the game (value order as declared).
 const ROLE = { player: 0, spectator: 1 };
@@ -85,7 +89,78 @@ class Session {
     this.hostId = 0;
     this.hostEpoch = 1;
     this.raceActive = false;
+    this.racers = [];
+    this.finished = []; // player ids in finishing order
+    this.timeout = null;
+    this.orderWait = null;
+    this.rematchReady = new Set();
     this.created = Date.now();
+  }
+
+  // The host's race_start_roster: a race begins with these racers.
+  startRace(racerIds) {
+    this.clearRaceTimers();
+    this.raceActive = true;
+    this.racers = racerIds.filter((id) => this.members.has(id));
+    this.finished = [];
+    this.rematchReady.clear();
+    for (const m of this.members.values()) m.isWaiting = false;
+  }
+
+  playerFinished(playerId) {
+    if (!this.raceActive || !this.racers.includes(playerId) || this.finished.includes(playerId)) return;
+    this.finished.push(playerId);
+    if (this.finished.length === 1 && !this.allFinished()) {
+      this.broadcast(serverFrame("race_timeout_update", { remainingTime: FINISH_TIMEOUT_S }));
+      this.timeout = setTimeout(() => this.askRaceOrder(), FINISH_TIMEOUT_S * 1000);
+      this.timeout.unref?.();
+    }
+    if (this.allFinished()) this.endRace(this.finished);
+  }
+
+  allFinished() {
+    return this.racers.every((id) => this.finished.includes(id) || !this.members.has(id));
+  }
+
+  // Time is up: the host's game knows where everyone is, so ask it.
+  askRaceOrder() {
+    this.timeout = null;
+    if (!this.raceActive) return;
+    const host = this.members.get(this.hostId);
+    if (!host) return this.endRace(this.finished);
+    host.sendFrames([host.seq(serverFrame("request_race_order", { sessionId: this.code }))]);
+    this.orderWait = setTimeout(() => this.endRace(this.finished), RACE_ORDER_WAIT_MS);
+    this.orderWait.unref?.();
+  }
+
+  endRace(order) {
+    if (!this.raceActive) return;
+    this.clearRaceTimers();
+    this.raceActive = false;
+    const finishOrder = [...new Set(order.filter((id) => this.racers.includes(id)))];
+    for (const id of this.racers) if (!finishOrder.includes(id) && this.members.has(id)) finishOrder.push(id);
+    const disconnectedPlayers = this.racers.filter((id) => !this.members.has(id));
+    this.broadcast(serverFrame("race_finished", { finishOrder, disconnectedPlayers }));
+    for (const m of this.members.values()) m.isWaiting = false;
+  }
+
+  rematchStatus() {
+    const players = [...this.members.values()].filter((m) => m.role === ROLE.player);
+    const ready = players.filter((m) => this.rematchReady.has(m.playerId)).map((m) => m.playerId);
+    this.broadcast(
+      serverFrame("rematch_status_update", {
+        totalPlayers: players.length,
+        readyPlayerIds: ready,
+        allReady: ready.length === players.length,
+        waitingPlayers: players.length - ready.length,
+      }),
+    );
+  }
+
+  clearRaceTimers() {
+    clearTimeout(this.timeout);
+    clearTimeout(this.orderWait);
+    this.timeout = this.orderWait = null;
   }
 
   freeId() {
@@ -247,6 +322,7 @@ function leave(member) {
   session.members.delete(member.playerId);
   member.session = null;
   if (!session.members.size) {
+    session.clearRaceTimers();
     sessions.delete(session.code);
     return;
   }
@@ -260,7 +336,8 @@ function leave(member) {
     }),
   );
   if (session.hostId === member.playerId) session.setHost(session.pickHost(), HOST_REASON.hostLeft);
-  if (session.raceActive && session.count(ROLE.player) === 0) session.raceActive = false;
+  if (session.raceActive && session.allFinished()) session.endRace(session.finished);
+  if (session.rematchReady.delete(member.playerId)) session.rematchStatus();
 }
 
 function setRole(member, role) {
@@ -319,9 +396,18 @@ function serverMessage(member, frame) {
       return session.setHost(member.playerId, HOST_REASON.claim);
     case "race_start_roster":
       if (member.playerId !== session.hostId) return;
-      session.raceActive = true;
-      for (const m of session.members.values()) m.isWaiting = false;
+      session.startRace(decode(name, body).racerIds || []);
       break;
+    case "player_finished":
+      // Passed on to everyone below; the server also keeps the order.
+      finishedBy(member, session, decode(name, body));
+      break;
+    case "race_order_response":
+      if (member.playerId !== session.hostId || !session.orderWait) return;
+      return session.endRace(decode(name, body).finishOrder || []);
+    case "rematch_ready":
+      session.rematchReady.add(member.playerId);
+      return session.rematchStatus();
     case "race_countdown_start": {
       // The host sends zero times; the server stamps its clock and a start one
       // second out, so every member counts down to the same moment.
@@ -330,14 +416,25 @@ function serverMessage(member, frame) {
       const now = Date.now() / 1000;
       return session.broadcast(clientFrame(name, { ...msg, serverTime: now, startTime: now + COUNTDOWN_LEAD_S }));
     }
-    case "race_finished":
-    case "rematch_triggered":
-      session.raceActive = false;
-      break;
   }
   // Anything else meant for the server goes to every member as it came, the
   // sender too, as the original does with the host's race_start_roster.
   session.broadcast(frame);
+}
+
+// A racer reports their own finish; the host may report anyone's.
+function finishedBy(member, session, msg) {
+  const id = msg.playerId;
+  if (id === member.playerId || member.playerId === session.hostId) session.playerFinished(id);
+}
+
+// Messages between members that the server's race bookkeeping follows.
+function peek(member, session, frame) {
+  const id = frame.readUInt32LE(1);
+  if (id === ID.player_finished) finishedBy(member, session, decode("player_finished", frame.subarray(5)));
+  else if (id === ID.rematch_triggered && member.playerId === session.hostId) {
+    session.rematchReady.clear();
+  }
 }
 
 // One frame from a member: [6][seq] wraps any of the others.
@@ -354,6 +451,7 @@ function onFrame(member, frame) {
   if (kind === 1) return serverMessage(member, inner);
   const session = member.session;
   if (!session || (kind !== 0 && kind !== 3 && kind !== 4)) return;
+  if (kind === 3 && inner.length >= 5) peek(member, session, inner);
   // 0 (unsequenced state), 3 (messages) and 4 (the game's own RPCs, with
   // their own serializer) all go to every other member, stamped.
   const stamped = relayed(member.playerId, session.hostEpoch, inner);

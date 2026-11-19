@@ -1,9 +1,11 @@
 // One digdig.io client: its packets, its reliable stream, and what it is shown.
 import { ClientCipher, ServerCipher } from "./cipher.js";
-import { unmaskClient, readVarint, readClientMessages } from "./stream.js";
+import { unmaskClient, readVarint, readClientMessages, varint as varintBytes, STREAM_MASK } from "./stream.js";
 import { Writer, writeEntity, entityId, snapshot } from "./snapshot.js";
 import { TILE, CHUNK, INPUT_ATTACK, INPUT_DEFEND } from "./world.js";
 import { STATE_RUNNING, STATE_WAITING } from "./modes.js";
+import { verifyToken, buySkin, grantGold } from "./accounts.js";
+import { SKINS, skinAt, FACE, SPINNER } from "./skins.js";
 
 const WORLD_ID = 1;
 const VIEW = entityId(1);
@@ -13,6 +15,12 @@ const ARENA = entityId(2);
 const VIEW_W = 1300;
 const VIEW_H = 950;
 const DEATH_SHOW_TICKS = 40;
+// Server messages (type 5) the client runs: 6 signs the client out (it forgets
+// its saved login).
+const MSG_SIGN_OUT = 6;
+// gold grants need ids no other run of this server uses
+const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+const GREY = [153, 153, 153];
 
 const diggerEntity = (d) => entityId(100 + (d.id % 20000), 1 + (Math.floor(d.id / 20000) % 65000));
 const chunkEntity = (cx, cy) => entityId(30000 + cy * 135 + cx);
@@ -35,6 +43,13 @@ const sparse = (list, write) => (w) => {
   w.varint(1);
 };
 const LEADERBOARD = 10;
+// field 44, the skins an account owns: [varint count], then (if any) a sparse
+// list of strings
+const stringList = (list) => (w) => {
+  w.varint(list.length);
+  if (list.length) sparse(list, (wr, v) => wr.string(v))(w);
+};
+const rgb = (c) => (w) => w.u8(c[0]).u8(c[1]).u8(c[2]);
 const u16angle = (a) => (w) => w.u16(Math.round((((a % (Math.PI * 2)) + Math.PI * 2) / (Math.PI * 2)) * 65536) & 65535);
 
 function encode(fn) {
@@ -53,6 +68,10 @@ export class Connection {
     this.tx = new ServerCipher();
     this.started = false;
     this.acked = 0; // highest reliable seq received from the client
+    this.outSeq = 0; // the last reliable message sent
+    // the 55GMS account (accounts.js), null for a guest
+    this.account = null;
+    this.skins = [0, 0]; // what the client has equipped, as far as the account owns it
     this.tick = 0;
     this.digger = null;
     this.deadAt = 0;
@@ -63,6 +82,18 @@ export class Connection {
     this.known = new Map();
     // chunk key -> { dug, reveal } as the client has them
     this.chunkState = new Map();
+  }
+
+  // Reliable messages for the client: a type-5 packet, [varint world id] then,
+  // masked like the client's stream, [varint seq][varint id][payload] for each.
+  // The client runs those with a seq above the last it ran (0: always).
+  sendMessages(list) {
+    if (!list.length) return;
+    const parts = [];
+    for (const [id, payload] of list) parts.push(Buffer.from(varintBytes(++this.outSeq)), Buffer.from(varintBytes(id)), payload);
+    const body = Buffer.concat(parts);
+    for (let i = 0; i < body.length; i++) body[i] ^= STREAM_MASK[i & 255];
+    this.send(5, Buffer.concat([Buffer.from(varintBytes(WORLD_ID)), body]));
   }
 
   send(type, body) {
@@ -104,6 +135,13 @@ export class Connection {
         next.take(this);
         this.spawn();
       } else this.wantsPlay = true;
+    } else if (m.name === "login") {
+      this.signIn(m.parts[2]);
+    } else if (m.name === "buy") {
+      this.buy(m.item);
+    } else if (m.name === "equip") {
+      this.wanted = [m.face, m.spinner];
+      this.applySkins();
     } else if (m.name === "input" && this.digger?.alive) {
       const d = this.digger;
       const throttle = Math.max(0, Math.min(1, m.distance / Math.max(60, d.radius * 3)));
@@ -115,15 +153,69 @@ export class Connection {
     }
   }
 
+  // The client's saved login is a 55GMS game token (the page puts it there).
+  async signIn(token) {
+    const result = await verifyToken(token);
+    if (this.ws.readyState !== 1 || !result) return;
+    if (result.invalid) {
+      this.account = null;
+      this.sendMessages([[MSG_SIGN_OUT, Buffer.alloc(0)]]);
+    } else {
+      this.account = result.account;
+      this.log("digdig_signed_in", { uuid: this.account.uuid });
+    }
+    this.applySkins();
+  }
+
+  async buy(item) {
+    const skin = SKINS.get(item);
+    if (!this.account || !skin?.price || this.account.items.includes(item) || this.buying) return;
+    this.buying = true;
+    try {
+      const result = await buySkin(this.account.uuid, item);
+      if (result.error) this.log("digdig_buy_refused", { uuid: this.account?.uuid, item, error: result.error });
+      else if (this.account?.uuid === result.uuid) this.account = result;
+    } finally {
+      this.buying = false;
+    }
+    this.applySkins();
+  }
+
+  // Skins are worn only when the account owns them.
+  applySkins() {
+    const owned = (slot, index) => {
+      const skin = skinAt(slot, index);
+      return skin && this.account?.items.includes(skin.id) ? index : 0;
+    };
+    const [face, spinner] = this.wanted || [0, 0];
+    this.skins = [owned(FACE, face), owned(SPINNER, spinner)];
+    if (this.digger?.alive) this.digger.skins = this.skins;
+  }
+
+  // A life's gold goes to the account when it ends.
+  payOut(d) {
+    if (!d || d.paid || !this.account) return;
+    d.paid = true;
+    const account = this.account;
+    const amount = d.gold + (d.bonusGold || 0);
+    if (!(amount > 0)) return;
+    grantGold(account.uuid, amount, `digdig:${RUN}:${d.id}`).then((gold) => {
+      if (gold !== null && this.account?.uuid === account.uuid) this.account.gold = gold;
+    });
+  }
+
   spawn() {
     this.wantsPlay = false;
     this.digger = this.world.addDigger({ name: this.nickname || "Unnamed" });
+    this.digger.skins = this.skins;
     if (process.env.DIGDIG_DEBUG) this.log("digdig_spawn", { id: this.digger.id });
     this.deadAt = 0;
   }
 
   onDeath(d) {
-    if (d === this.digger) this.deadAt = this.world.tick;
+    if (d !== this.digger) return;
+    this.deadAt = this.world.tick;
+    this.payOut(d);
   }
 
   // into another lobby's world; what the client has is diffed against the new one
@@ -136,7 +228,10 @@ export class Connection {
   }
 
   close() {
-    if (this.digger?.alive) this.world.removeDigger(this.digger);
+    if (this.digger?.alive) {
+      this.payOut(this.digger);
+      this.world.removeDigger(this.digger);
+    }
   }
 
   // ---- what this client is shown, every tick ----
@@ -169,7 +264,7 @@ export class Connection {
         [15, f32(world.center)],
         [16, varint(ranked.length)],
         [17, varint(state)],
-        [18, sparse(top, (w, d) => (d === me ? w.u8(255).u8(214).u8(64) : w.u8(150).u8(150).u8(150)))],
+        [18, sparse(top, (w, d) => rgb(d === me && !d.team ? [255, 214, 64] : rules.colorOf?.(d) || [150, 150, 150])(w))],
         [20, sparse(top, (w, d) => w.string(d.name))],
         [21, f32(arena.countdownMs)],
         [24, varint(arena.needed || 0)],
@@ -177,6 +272,8 @@ export class Connection {
         [25, f32(1)],
         [27, varint(world.seed >>> 0)],
         [28, sparse(top, (w, d) => w.varint(Math.max(0, d.shownScore)))],
+        // Tag: ms into the round
+        ...(rules.roundMs ? [[19, f64(rules.roundMs())]] : []),
       ],
     });
 
@@ -186,8 +283,10 @@ export class Connection {
     }
     if (me && !me.alive && !visible.includes(me)) visible.push(me);
     for (const d of visible) {
+      const tag = d.seeker != null;
       entities.set(diggerEntity(d), {
-        components: [0, 1, 2, 3, 7, 10],
+        // component 11 field 71 (Tag): 0 a seeker, else a hider
+        components: tag ? [0, 1, 2, 3, 7, 10, 11] : [0, 1, 2, 3, 7, 10],
         fields: [
           [1, svar4(d.x)],
           [2, svar4(d.y)],
@@ -197,6 +296,9 @@ export class Connection {
           [6, f32(1)],
           [8, f32(d.radius)],
           [34, str(d.name)],
+          [66, rgb(rules.colorOf?.(d) || GREY)],
+          [68, sparse(d.skins || [0, 0], (w, v) => w.u8(v))],
+          ...(tag ? [[71, u8(d.seeker ? 0 : 1)]] : []),
           [69, f32(d.shownScore)],
         ],
       });
@@ -205,14 +307,17 @@ export class Connection {
     entities.set(VIEW, {
       components: [8],
       fields: [
+        // bit 2: the account is loaded (the shop shows field 51's gold);
         // bit 8: "YOU HAVE WON"
-        [35, u8(rules.won?.(me) ? 8 : 0)],
+        [35, u8(2 | (rules.won?.(me) ? 8 : 0))],
+        [44, stringList(this.account?.items || [])],
+        [51, f64(this.account?.gold || 0)],
         [37, svar4(cam.x)],
         // the death screen: diggers destroyed, gold, time alive (52 - 49, ms), max points
         ...(me
           ? [
               [38, varint(me.kills)],
-              [41, f32(me.gold)],
+              [41, f32(me.gold + (me.bonusGold || 0))],
               [47, svar4(cam.y)],
               [49, f64(me.spawnedAt)],
               [52, f64(me.diedAt || me.spawnedAt)],
@@ -301,7 +406,8 @@ export class Connection {
       const isNew = !had;
       if (isNew) this.known.set(id, (had = new Map()));
       const fields = [];
-      for (const [index, fn] of e.fields) {
+      // the client reads field indexes as deltas from the one before
+      for (const [index, fn] of [...e.fields].sort((a, b) => a[0] - b[0])) {
         const bytes = encode(fn);
         const prev = had.get(index);
         if (!isNew && prev && prev.equals(bytes)) continue;

@@ -66,10 +66,16 @@ const CLIENT_MESSAGES = {
   24: (buf, pos) => [{ name: "m24" }, pos],
   34: (buf, pos) => [{ name: "m34" }, pos],
   21: (buf, pos) => [{ name: "m21", byte: buf[pos] }, pos + 1],
+  // the shop's Buy: the skin's id (skins.js)
   2: (buf, pos) => {
-    let text;
-    [text, pos] = cstring(buf, pos);
-    return [{ name: "chat", text }, pos];
+    let item;
+    [item, pos] = cstring(buf, pos);
+    return [{ name: "buy", item }, pos];
+  },
+  7: (buf, pos) => {
+    let v;
+    [v, pos] = readVarint(buf, pos);
+    return [{ name: "m7", v }, pos];
   },
   14: (buf, pos) => {
     let text;
@@ -85,10 +91,17 @@ const CLIENT_MESSAGES = {
     }
     return [{ name: "report", parts }, pos];
   },
-  // login data the client keeps for its own account system: 3 strings and an f64
+  // the login the client keeps (localStorage oauth2_data_DO_NOT_SHARE), sent on
+  // connect: provider, token, user id, and the expiry (ms)
   28: (buf, pos) => {
-    for (let i = 0; i < 3; i++) [, pos] = cstring(buf, pos);
-    return [{ name: "m28" }, pos + 8];
+    const parts = [];
+    for (let i = 0; i < 3; i++) {
+      let t;
+      [t, pos] = cstring(buf, pos);
+      parts.push(t);
+    }
+    const expires = pos + 8 <= buf.length ? buf.readDoubleLE(pos) : 0;
+    return [{ name: "login", parts, expires }, pos + 8];
   },
   13: (buf, pos) => {
     const platform = buf[pos++];
@@ -98,7 +111,8 @@ const CLIENT_MESSAGES = {
     [language, pos] = cstring(buf, pos);
     return [{ name: "client", platform, userAgent, token, language }, pos];
   },
-  20: (buf, pos) => [{ name: "m20", bytes: [buf[pos], buf[pos + 1]] }, pos + 2],
+  // the skins the client has equipped: face and spinner indexes (skins.js), 0 for none
+  20: (buf, pos) => [{ name: "equip", face: buf[pos] ?? 0, spinner: buf[pos + 1] ?? 0 }, pos + 2],
   // mouse/keys, sent unreliably every packet: [varint flags][f32 angle][f32 distance]
   // flags: 65536 always, 1 left button
   5: (buf, pos) => {
@@ -110,6 +124,7 @@ const CLIENT_MESSAGES = {
     return [{ name: "input", flags, angle: Number.isFinite(angle) ? angle : 0, distance: Number.isFinite(distance) ? distance : 0 }, pos + 8];
   },
   23: (buf, pos) => [{ name: "keepalive" }, pos], // every few seconds
+  29: (buf, pos) => [{ name: "m29" }, pos], // after a saved login arrives (message 12)
   16: (buf, pos) => {
     let nickname;
     [nickname, pos] = cstring(buf, pos);

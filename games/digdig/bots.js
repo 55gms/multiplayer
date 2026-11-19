@@ -42,9 +42,20 @@ export class Bot {
     let threat = null, prey = null;
     let threatDist = Infinity, preyScore = -Infinity;
     for (const o of world.diggers.values()) {
-      if (o === d || !o.alive) continue;
+      if (o === d || !o.alive || world.friends(d, o)) continue;
       const dist = Math.hypot(o.x - d.x, o.y - d.y) - o.radius - d.radius;
       if (dist > SENSE) continue;
+      // Tag: seekers chase hiders whatever their size, hiders run from seekers
+      if (d.seeker != null) {
+        if (o.seeker === d.seeker) continue;
+        if (o.seeker) {
+          if (dist < threatDist) (threat = o), (threatDist = dist);
+        } else {
+          const s = -dist + (o.bot ? 0 : 50);
+          if (s > preyScore) (prey = o), (preyScore = s);
+        }
+        continue;
+      }
       if (o.radius > d.radius * 1.12 * this.courage) {
         if (dist < threatDist) (threat = o), (threatDist = dist);
       } else if (o.radius * 1.12 < d.radius * this.aggression + d.radius * 0.4) {

@@ -109,6 +109,7 @@ export class World {
     this.listeners = new Set(); // (event) => void: kill, death
     this.materialCache = new Map();
     this.peaceful = false; // no damage (a Battle Royale countdown)
+    this.killGold = true; // kills earn a share of the victim's gold (FFA, TDM)
   }
 
   chunk(cx, cy) {
@@ -177,6 +178,7 @@ export class World {
     d.y = p.y;
     d.angle = Math.random() * Math.PI * 2;
     this.diggers.set(d.id, d);
+    this.onAdd?.(d); // the mode's say: a team, a role
     this.digAround(d);
     return d;
   }
@@ -237,6 +239,9 @@ export class World {
     if (killer) {
       killer.score += Math.round(d.score * 0.5) + 50;
       killer.kills++;
+      // the client's changelog: a kill gives 10% of the gold the victim collected
+      // (who keeps theirs); paid with the killer's own gold when its life ends
+      if (this.killGold) killer.bonusGold = (killer.bonusGold || 0) + Math.floor((d.gold + (d.bonusGold || 0)) * 0.1);
     }
     this.removeDigger(d);
     this.emit({ type: "death", digger: d, killer });
@@ -311,6 +316,11 @@ export class World {
     this.digAround(d);
   }
 
+  // on the same side: they push each other but do no damage
+  friends(a, b) {
+    return a.team != null && a.team === b.team;
+  }
+
   solidAhead(d) {
     const r = d.radius;
     const px = d.x + Math.cos(d.angle) * (r + TILE * 0.5);
@@ -337,6 +347,8 @@ export class World {
         a.y -= ny * overlap * (mb / (ma + mb));
         b.x += nx * overlap * (ma / (ma + mb));
         b.y += ny * overlap * (ma / (ma + mb));
+        this.onTouch?.(a, b);
+        if (this.friends(a, b)) continue;
         // the bigger one does more damage; attacking does more
         const hit = (from, to) => {
           const ratio = from.radius / to.radius;

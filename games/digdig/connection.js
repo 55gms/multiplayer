@@ -273,7 +273,7 @@ export class Connection {
         [27, varint(world.seed >>> 0)],
         [28, sparse(top, (w, d) => w.varint(Math.max(0, d.shownScore)))],
         // Tag: ms into the round
-        ...(rules.roundMs ? [[19, f64(rules.roundMs())]] : []),
+        ...(rules.roundMs ? [[19, f32(rules.roundMs())]] : []),
       ],
     });
 

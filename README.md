@@ -8,6 +8,7 @@ One server for the multiplayer games on [55GMS](https://github.com/55gms/55GMS).
 | BasketBros, SoccerBros, BaseballBros | `/api/mp/<game>/play`, `/api/mp/<game>/ping` (`basketbros`, `soccerbros`, `baseballbros`) | Blue Wizard's lockstep relay (little-endian ints over WebSocket), one against one |
 | FootballBros, HockeyBros             | `/api/mp/<game>/play`, `/api/mp/<game>/ping` (`footballbros`, `hockeybros`)              | The same relay with a lobby of up to three a side                                 |
 | Ducklings.io                         | `/api/mp/ducklings/play`                                                                  | Passed through unchanged to `wss://multiplayer.ducklings.io/ws`                   |
+| digdig.io                            | `/api/mp/digdig/play`, `/api/mp/digdig/servers`                                           | M28's own protocol (`games/digdig/README.md`); the game runs here, with bots       |
 | Smash Karts                          | `/api/mp/smashkarts/ns`, `/master`, `/game`, `/remote/<ticket>`                           | Photon PUN 2 (binary protocol 1.8 over WebSocket); PLAY goes on to the official Photon cloud |
 
 `GET /api/mp/health` reports the games and open connections. Every minute the server logs one `stats` line (connections, rooms, players, bytes).
@@ -27,6 +28,7 @@ MP_DEBUG=1 node .     # also log every operation with its parameters
 - `src/photon/` the Photon layer any Photon game can reuse: `protocol18.js` (value codec), `codes.js` (operation, parameter and event codes), `peer.js` (framing, ping, limits)
 - `games/bros/` the five Blue Wizard sports games: `wire.js` (message bytes), `clock.js` (the shared 60 Hz tick), `duel.js` (one against one), `lobby.js` (FootballBros, HockeyBros), `index.js` (sockets, limits, the region ping)
 - `games/ducklings/` a pass-through relay to Ducklings.io's own server
+- `games/digdig/` digdig.io: the packet cipher (`cipher.js`), the client's stream and snapshots (`stream.js`, `snapshot.js`), the map (`terrain.js`, the same as the client's), the game (`world.js`), what each player is shown (`connection.js`), bots (`bots.js`) and lobbies (`index.js`). `DIGDIG_ARENA_TILES` sets the arena radius (200 tiles), `DIGDIG_DEBUG=1` logs every client message. `tools/digdig/` holds the tools that worked the protocol out
 - `games/smashkarts/` the three Photon roles for Smash Karts (copies of 1v1's `rooms.js`, `game.js` and `presence.js`, without the referee and ranked code), and `remote.js`, the relay to the official Photon cloud
 - `games/1v1/` the three Photon roles over one in-memory room registry (`rooms.js`), 55GMS accounts (`accounts.js`) and the match referee (`referee.js`)
 

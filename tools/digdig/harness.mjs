@@ -183,5 +183,5 @@ if (handler.breaks) {
 }
 if (handler.drive) await handler.drive(page, log);
 await page.waitForTimeout(opt.secs * 1000);
-if (opt.shot) await page.screenshot({ path: opt.shot });
+if (opt.shot) await page.screenshot({ path: opt.shot, timeout: 5000 }).catch(() => log("screenshot timed out"));
 await browser.close();

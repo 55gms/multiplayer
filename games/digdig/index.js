@@ -7,6 +7,7 @@ import { World, TICK_MS } from "./world.js";
 import { Connection } from "./connection.js";
 import { Bot, botName } from "./bots.js";
 import { rulesFor } from "./modes.js";
+import { randomSkin, FACE, SPINNER } from "./skins.js";
 
 const MAX_PLAYERS = 20; // people per lobby
 const TARGET_DIGGERS = 12; // bots fill a lobby up to this many diggers
@@ -25,7 +26,9 @@ class Lobby {
   constructor(id, mode) {
     this.id = id;
     this.mode = mode;
-    this.world = new World({ radiusTiles: Number(process.env.DIGDIG_ARENA_TILES) || 200 });
+    // Maze: map flag 16, bedrock walls the client draws from the seed (maze.js)
+    this.world = new World({ radiusTiles: Number(process.env.DIGDIG_ARENA_TILES) || 200, flags: mode === "maze" ? 16 : 0 });
+    log("digdig_lobby_start", { lobby: id, mode, seed: this.world.seed >>> 0 });
     this.connections = new Set();
     this.bots = new Set();
     this.world.listeners.add((e) => {
@@ -54,6 +57,8 @@ class Lobby {
       const d = this.world.addDigger({ name: botName(taken), bot: true });
       // bots start at different sizes, so there is something to hunt and to run from
       d.score = this.rules.botScore?.() ?? Math.floor(Math.random() ** 2 * 6000);
+      // some bots wear shop skins, as players do
+      d.skins = [Math.random() < 0.4 ? randomSkin(FACE).index : 0, Math.random() < 0.3 ? randomSkin(SPINNER).index : 0];
       taken.add(d.name);
       this.bots.add(new Bot(this.world, d));
     }

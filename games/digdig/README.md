@@ -77,7 +77,7 @@ Server messages (type 5), handled by client f1392:
 | 18 | `[varint request][string]`: why a squad request failed, shown in the Squad panel |
 | 19 | string: stored as localStorage `cp6_player_id` |
 | 22 | varint: an achievement's "+N gold" popup |
-| 25 | `[u32 entity][u8]`: a mark on an entity, unknown |
+| 25 | `[u32 entity][u8 strength]`: the entity was hurt; it flashes red (strength 255 strongest), and when it is the player's own digger the screen shakes |
 | 26 | empty: squads work here (the Squad panel waits for it) |
 | 27 | `[varint request][string]`: why joining a squad failed, e.g. "Squad doesn't exist" |
 

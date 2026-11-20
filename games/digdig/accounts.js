@@ -21,7 +21,7 @@ async function call(path, body, timeout) {
   return { status: response.status, body: await response.json().catch(() => ({})) };
 }
 
-// { uuid, handle, gold, items } as 55GMS sends it, or null
+// { uuid, handle, gold, items, achievements, stats } as 55GMS sends it, or null
 function account(body) {
   if (typeof body?.uuid !== "string") return null;
   return {
@@ -29,7 +29,16 @@ function account(body) {
     handle: String(body.handle || ""),
     gold: Number(body.gold) || 0,
     items: Array.isArray(body.items) ? body.items.map(String) : [],
+    achievements: Array.isArray(body.achievements) ? body.achievements.map(String) : [],
+    stats: stats(body.stats),
   };
+}
+
+// lifetime totals (achievements.js)
+function stats(body) {
+  const out = {};
+  for (const key of ["kills", "dirt", "gold", "tags", "br_wins", "ores"]) out[key] = Number(body?.[key]) || 0;
+  return out;
 }
 
 // { account } for a game token, { invalid: true } when 55GMS does not know it
@@ -61,27 +70,45 @@ export async function buySkin(uuid, item) {
   }
 }
 
-// Gold the server decided an account earned (a life's digging, a win). Each
-// grant has a unique source, which 55GMS applies once, so a retry after a lost
-// answer is harmless; grants wait here until 55GMS has them.
+// What the server decided an account earned: gold (a life's digging, a win),
+// an achievement, a life's stats. Each call has a unique source, which 55GMS
+// applies once, so a retry after a lost answer is harmless; calls wait here,
+// in order, until 55GMS has them.
 const queue = [];
 const waiting = new Map(); // source -> [resolve]
 let timer = null;
 let backoff = 1000;
 
-// Resolves with the account's new balance once 55GMS has the grant (or null).
-export function grantGold(uuid, amount, source) {
-  if (!accountsEnabled || !(amount > 0)) return Promise.resolve(null);
+function enqueue(path, body, source) {
+  if (!accountsEnabled) return Promise.resolve(null);
   if (queue.length >= QUEUE_MAX) {
     const dropped = queue.shift();
-    log("digdig_gold_dropped", { source: dropped.source, reason: "queue_full" });
+    log("digdig_grant_dropped", { source: dropped.source, reason: "queue_full" });
     for (const r of waiting.get(dropped.source) || []) r(null);
     waiting.delete(dropped.source);
   }
-  queue.push({ uuid, amount: Math.floor(amount), source });
+  queue.push({ path, body, source });
   const done = new Promise((resolve) => waiting.set(source, [...(waiting.get(source) || []), resolve]));
   flushSoon(0);
   return done;
+}
+
+// Resolves with the account's new balance once 55GMS has the grant (or null).
+export function grantGold(uuid, amount, source) {
+  if (!(amount > 0)) return Promise.resolve(null);
+  return enqueue("gold", { uuid, amount: Math.floor(amount), source }, source).then((body) =>
+    Number.isFinite(Number(body?.gold)) ? Number(body.gold) : null,
+  );
+}
+
+// Unlocks an achievement (55GMS pays its reward with it): the account after, or null.
+export function unlockAchievement(uuid, achievement) {
+  return enqueue("achievement", { uuid, achievement }, `achievement:${uuid}:${achievement}`).then(account);
+}
+
+// Adds a life's stats to the account's totals: the totals after, or null.
+export function addStats(uuid, lifeStats, source) {
+  return enqueue("stats", { uuid, stats: lifeStats, source }, source).then((body) => (body?.stats ? stats(body.stats) : null));
 }
 
 function flushSoon(delay) {
@@ -93,22 +120,23 @@ function flushSoon(delay) {
 async function flush() {
   timer = null;
   while (queue.length) {
-    const grant = queue[0];
-    let gold = null;
+    const item = queue[0];
+    let answer = null;
     try {
-      const { status, body } = await call("gold", grant, 10000);
+      const { status, body } = await call(item.path, item.body, 10000);
       if (status >= 500 || status === 403) throw new Error(`HTTP ${status}`);
       // 2xx (applied, or applied before) or a 4xx 55GMS will never accept
-      if (status === 200 && Number.isFinite(Number(body.gold))) gold = Number(body.gold);
+      if (status === 200) answer = body;
+      else log("digdig_grant_refused", { path: item.path, source: item.source, status, error: String(body?.error || "") });
       queue.shift();
       backoff = 1000;
     } catch (err) {
-      log("digdig_gold_failed", { source: grant.source, error: String(err.message || err), retryMs: backoff });
+      log("digdig_grant_failed", { path: item.path, source: item.source, error: String(err.message || err), retryMs: backoff });
       flushSoon(backoff);
       backoff = Math.min(backoff * 2, 60000);
       return;
     }
-    for (const r of waiting.get(grant.source) || []) r(gold);
-    waiting.delete(grant.source);
+    for (const r of waiting.get(item.source) || []) r(answer);
+    waiting.delete(item.source);
   }
 }

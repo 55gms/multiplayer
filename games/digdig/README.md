@@ -76,7 +76,7 @@ Server messages (type 5), handled by client f1392:
 | 12 | five strings and an f64 (`s s s f64 s s`): a new saved login, stored as id, provider, token, display name, expiry, avatar |
 | 18 | `[varint request][string]`: why a squad request failed, shown in the Squad panel |
 | 19 | string: stored as localStorage `cp6_player_id` |
-| 22 | varint: an achievement's "+N gold" popup |
+| 22 | varint: an achievement unlocked, by index (below); the client shows "Achievement unlocked" with its name, text and reward |
 | 25 | `[u32 entity][u8 strength]`: the entity was hurt; it flashes red (strength 255 strongest), and when it is the player's own digger the screen shakes |
 | 26 | empty: squads work here (the Squad panel waits for it) |
 | 27 | `[varint request][string]`: why joining a squad failed, e.g. "Squad doesn't exist" |
@@ -188,7 +188,8 @@ values are interpolated over ~120 ms when they change):
 | 62, 63 | 9 | rgb, bit | unknown; a colour and a flag (did not change how a digger is drawn) |
 | 66 | 10 digger | rgb | body colour (team colour); tunnels it digs take it too |
 | 68 | 10 digger | sparse u8 | skins worn: [face, spinner] |
-| 35 | 8 view | u8 | bit 2: account loaded (the shop shows field 51) |
+| 35 | 8 view | u8 | bit 2: account loaded (the shop shows field 51); bit 4: achievement progress loaded (field 43) |
+| 43 | 8 view | sparse u8 | each achievement's progress, 0-100 (100 unlocked), by index; read only with field 35 bit 4 |
 | 44 | 8 view | list | skins owned: `[varint count]`, then (if any) a sparse list of strings |
 | 51 | 8 view | f64 | the account's gold |
 | 71 | 11 | u8 | Tag: 0 "You are a seeker", else "You are a hider", shown 10 s when it changes; the client reads the first component 11 entity, so it is an entity of its own (not the view, which breaks the menu) |
@@ -248,6 +249,20 @@ ids are the modes). A code of another mode makes the client look its server up
 reconnect before it joins. Members share a lobby, cannot hurt each other, see
 around each other, are always in each other's snapshots (the in-game squad
 list shows their health), and play on one team in TDM.
+
+## Achievements
+
+`achievements.js`. The client has 35, index 0 `score_1` to 34 `merciless`
+(ids at memory 72724, names 72248, texts 72388; the rewards are in its message
+22 handler: gold, except `master_seeker`, which gives the `spider` face). Server
+message 22 `[varint index]` puts up the "Achievement unlocked" card; view field
+43 is the progress the Achievements panel (the star button) shows, and the
+client keeps it in localStorage `digdig_achievement_cache` as
+`{"<id>": percent}`. 55GMS keeps an account's unlocked achievements and
+lifetime totals (kills, dirt, gold, tags, Battle Royale wins, ores) and pays
+the rewards (`/api/digdig/internal/achievement`, `/stats`). Our diggers stop
+growing at about 47.8k score, so `score_2`, `score_3` and `deflation` (100k,
+1m) cannot be earned yet.
 
 ## Maze
 

@@ -1,4 +1,4 @@
-// Bots that keep a digdig.io lobby busy. Each one, about twice a second:
+// Bots that keep a digdig.io lobby busy. Each one, about once a second:
 // runs from a much bigger digger it can sense, hunts a smaller one (players and
 // other bots alike, attacking once close), or else farms: heads for the nearest
 // ore it can sense, or wanders, steering clear of bedrock, lava and the edge.
@@ -10,7 +10,7 @@ const NAMES = [
   "Augur", "Dirt Devil", "Badger", "Wormy", "Gravel", "Pickaxe", "Lode", "Sandy", "Boulder",
 ];
 
-const SENSE = 1300; // units
+const SENSE = 800; // units: how far a bot notices other diggers
 const ORE_SENSE_TILES = 14;
 const ORES = new Set([M.GOLD, M.TEAL, M.AMETHYST, M.QUARTZ, M.URANIUM]);
 
@@ -30,6 +30,9 @@ export class Bot {
     // a little personality: how brave and how greedy
     this.courage = 0.8 + Math.random() * 0.5;
     this.aggression = 0.6 + Math.random() * 0.6;
+    // how far off its aim is, in radians, and how often it swings when close
+    this.sloppiness = 0.25 + Math.random() * 0.3;
+    this.swing = 0.4 + Math.random() * 0.3;
   }
 
   think() {
@@ -37,7 +40,8 @@ export class Bot {
     if (!d.alive) return;
     const world = this.world;
     if (world.tick < this.next) return this.steer();
-    this.next = world.tick + 6 + Math.floor(Math.random() * 6);
+    // rethink every 0.6 to 1.2 s, so a bot reacts late to a turn or a dash
+    this.next = world.tick + 12 + Math.floor(Math.random() * 12);
 
     let threat = null, prey = null;
     let threatDist = Infinity, preyScore = -Infinity;
@@ -51,7 +55,7 @@ export class Bot {
         if (o.seeker) {
           if (dist < threatDist) (threat = o), (threatDist = dist);
         } else {
-          const s = -dist + (o.bot ? 0 : 50);
+          const s = -dist;
           if (s > preyScore) (prey = o), (preyScore = s);
         }
         continue;
@@ -59,8 +63,8 @@ export class Bot {
       if (o.radius > d.radius * 1.12 * this.courage) {
         if (dist < threatDist) (threat = o), (threatDist = dist);
       } else if (o.radius * 1.12 < d.radius * this.aggression + d.radius * 0.4) {
-        // prefer close, big-enough prey (more score), players a little more
-        const s = o.radius * 2 - dist * 0.08 + (o.bot ? 0 : 15);
+        // prefer close, big-enough prey (more score); players are no likelier than bots
+        const s = o.radius * 2 - dist * 0.08;
         if (s > preyScore) (prey = o), (preyScore = s);
       }
     }
@@ -69,15 +73,13 @@ export class Bot {
       this.mode = "flee";
       this.angle = Math.atan2(d.y - threat.y, d.x - threat.x);
       this.buttons = threatDist < 120 ? (d.health > 0.35 ? INPUT_ATTACK : INPUT_DEFEND) : 0;
-    } else if (prey && d.health > 0.35) {
+    } else if (prey && d.health > 0.5) {
       this.mode = "hunt";
-      // lead the target a little
-      const lead = Math.min(1, Math.hypot(prey.x - d.x, prey.y - d.y) / 600);
-      const px = prey.x + Math.cos(prey.angle) * prey.radius * 2 * lead;
-      const py = prey.y + Math.sin(prey.angle) * prey.radius * 2 * lead;
-      this.angle = Math.atan2(py - d.y, px - d.x);
-      const close = Math.hypot(prey.x - d.x, prey.y - d.y) < (d.radius + prey.radius) * 2.2;
-      this.buttons = close && d.health > 0.5 ? INPUT_ATTACK : 0;
+      // aim at where the prey is now, not where it is going, and a little off
+      const miss = (Math.random() - 0.5) * 2 * this.sloppiness;
+      this.angle = Math.atan2(prey.y - d.y, prey.x - d.x) + miss;
+      const close = Math.hypot(prey.x - d.x, prey.y - d.y) < (d.radius + prey.radius) * 1.8;
+      this.buttons = close && d.health > 0.6 && Math.random() < this.swing ? INPUT_ATTACK : 0;
     } else {
       this.mode = "farm";
       this.buttons = d.health < 0.5 ? INPUT_DEFEND : 0;

@@ -24,8 +24,8 @@ const TILE_SCORE = { 1: 4, 2: 6, 3: 1, 6: 2, 7: 0, 8: 12, 9: 4 };
 
 const BASE_RADIUS = 25; // a new digger; the client shows score as radius^2 - 625
 const MAX_RADIUS = 220;
-const BASE_SPEED = 11; // units per tick in an open tunnel, at base radius
-const DIG_SLOWDOWN = 0.62; // speed in dirt
+const BASE_SPEED = 14; // units per tick in an open tunnel, at base radius
+const DIG_SLOWDOWN = 0.7; // speed in dirt
 const ATTACK_SPEED = 1.35;
 const DEFEND_SPEED = 0.6;
 const REGEN_PER_TICK = 0.004;

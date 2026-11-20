@@ -91,6 +91,7 @@ export class BattleRoyale {
       const overtime = t - this.startTick > BR_SHRINK + BR_OVERTIME;
       if (alive.length <= 1 || overtime || !this.humans().length) {
         this.winner = alive.sort((a, b) => b.score - a.score)[0] || null;
+        if (this.winner) world.emit({ type: "win", digger: this.winner, mode: "br" });
         this.state = "over";
         this.until = t + BR_SHOW_WINNER;
       }
@@ -102,8 +103,12 @@ export class BattleRoyale {
   // a fresh round: everyone out, the tunnels filled in, the arena full size
   reset(next) {
     const world = this.world;
-    // whoever is still in plays the next round too
-    for (const c of this.lobby.connections) if (c.digger?.alive) c.wantsPlay = true;
+    // whoever is still in plays the next round too; this life ends here
+    for (const c of this.lobby.connections) {
+      if (!c.digger?.alive) continue;
+      c.wantsPlay = true;
+      c.endLife(c.digger);
+    }
     for (const d of [...world.diggers.values()]) world.removeDigger(d);
     this.lobby.bots.clear();
     world.chunks.clear();
@@ -189,6 +194,7 @@ export class Tag extends FreeForAll {
     hider.seeker = true;
     seeker.bonusGold = (seeker.bonusGold || 0) + 10;
     seeker.kills++;
+    seeker.life.tags++;
   }
 
   step() {
@@ -209,6 +215,7 @@ export class Tag extends FreeForAll {
     if (diggers.length > 1 && (!diggers.some((d) => !d.seeker) || t - this.startTick >= TAG_ROUND)) {
       for (const d of diggers) if (!d.seeker) d.bonusGold = (d.bonusGold || 0) + 100;
       this.winners = new Set(diggers.filter((d) => !d.seeker));
+      for (const d of this.winners) world.emit({ type: "win", digger: d, mode: "tag" });
       this.over = t + TAG_SHOW;
     }
   }

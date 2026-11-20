@@ -59,6 +59,12 @@ export class Chunk {
   }
 }
 
+// What one life did, for achievements (achievements.js): tiles dug of each
+// kind, the ores dug (bit = material), real kills and Tag tags. kills,
+// dirt, gold, tags, br_wins and ores also join the account's lifetime totals.
+export const newLife = () => ({ kills: 0, dirt: 0, gold: 0, tags: 0, br_wins: 0, ores: 0, lava: 0, uranium: 0 });
+const ORE = new Set([M.AMETHYST, M.GOLD, M.URANIUM, M.QUARTZ]);
+
 let nextDiggerId = 1;
 
 export class Digger {
@@ -89,6 +95,12 @@ export class Digger {
     this.spawnedAt = Date.now();
     this.diedAt = 0;
     this.maxScore = 0;
+    // achievements
+    this.life = newLife();
+    this.killTicks = []; // ticks of its kills
+    this.lastKillTick = null;
+    this.lastGoldTick = null;
+    this.leaderSince = null;
   }
   get radius() {
     const r = Math.sqrt(BASE_RADIUS * BASE_RADIUS + this.score);
@@ -188,6 +200,7 @@ export class World {
     this.diggers.set(d.id, d);
     this.onAdd?.(d); // the mode's say: a team, a role
     this.digAround(d);
+    d.life = newLife(); // the hole it spawns in is not its digging
     return d;
   }
 
@@ -225,7 +238,15 @@ export class World {
 
   reward(d, m) {
     d.score += TILE_SCORE[m] || 0;
-    if (m === M.GOLD) d.gold++;
+    if (m === M.GOLD) {
+      d.gold++;
+      d.lastGoldTick = this.tick;
+    }
+    if (m === M.DIRT) d.life.dirt++;
+    else if (m === M.GOLD) d.life.gold++;
+    else if (m === M.LAVA) d.life.lava++;
+    else if (m === M.URANIUM) d.life.uranium++;
+    if (ORE.has(m)) d.life.ores |= 1 << m;
     if (m === M.URANIUM) d.uranium = BOOST_TICKS;
     if (m === M.AMETHYST) d.amethyst = BOOST_TICKS * 2;
     if (m === M.QUARTZ) d.quartz = BOOST_TICKS;
@@ -248,6 +269,10 @@ export class World {
     if (killer) {
       killer.score += Math.round(d.score * 0.5) + 50;
       killer.kills++;
+      killer.life.kills++;
+      killer.killTicks.push(this.tick);
+      if (killer.killTicks.length > 5) killer.killTicks.shift();
+      killer.lastKillTick = this.tick;
       // the client's changelog: a kill gives 10% of the gold the victim collected
       // (who keeps theirs); paid with the killer's own gold when its life ends
       if (this.killGold) killer.bonusGold = (killer.bonusGold || 0) + Math.floor((d.gold + (d.bonusGold || 0)) * 0.1);

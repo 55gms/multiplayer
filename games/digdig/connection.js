@@ -7,6 +7,7 @@ import { STATE_RUNNING, STATE_WAITING } from "./modes.js";
 import { verifyToken, buySkin, grantGold } from "./accounts.js";
 import { SKINS, skinAt, FACE, SPINNER } from "./skins.js";
 import { Squad, SQUAD_SIZE, SQUAD_MODES, leaveSquad, findSquad, publicSquad } from "./squads.js";
+import { Achievements } from "./achievements.js";
 
 const WORLD_ID = 1;
 const VIEW = entityId(1);
@@ -25,6 +26,7 @@ const MSG_SIGN_OUT = 6;
 const MSG_SQUAD = 18;
 const MSG_SQUAD_JOINED = 27;
 const MSG_SQUADS_READY = 26;
+const MSG_ACHIEVEMENT = 22; // [varint index]: "Achievement unlocked" (achievements.js)
 const MSG_HURT = 25; // [entity][u8 strength]: the digger flashes red; the player's own also shakes the screen
 // gold grants need ids no other run of this server uses
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -81,6 +83,7 @@ export class Connection {
     this.account = null;
     this.skins = [0, 0]; // what the client has equipped, as far as the account owns it
     this.squad = null; // squads.js
+    this.achievements = new Achievements(this);
     this.tick = 0;
     this.digger = null;
     this.deadAt = 0;
@@ -177,6 +180,7 @@ export class Connection {
       this.sendMessages([[MSG_SIGN_OUT, Buffer.alloc(0)]]);
     } else {
       this.account = result.account;
+      this.achievements.load(this.account);
       this.log("digdig_signed_in", { uuid: this.account.uuid });
     }
     this.applySkins();
@@ -239,7 +243,17 @@ export class Connection {
     leaveSquad(this);
   }
 
-  // A life's gold goes to the account when it ends.
+  showAchievement(index) {
+    this.sendMessages([[MSG_ACHIEVEMENT, Buffer.from(varintBytes(index))]]);
+  }
+
+  // A life is over: its gold goes to the account, its stats to the
+  // achievements' lifetime totals.
+  endLife(d) {
+    this.payOut(d);
+    this.achievements.endLife(d, `digdig-stats:${RUN}:${d.id}`);
+  }
+
   payOut(d) {
     if (!d || d.paid || !this.account) return;
     d.paid = true;
@@ -259,10 +273,16 @@ export class Connection {
     this.deadAt = 0;
   }
 
-  onDeath(d) {
-    if (d !== this.digger) return;
+  // the world's events (World.emit): a death, a win
+  onWorldEvent(e) {
+    const me = this.digger;
+    if (!me || (e.digger !== me && e.killer !== me)) return;
+    if (e.type === "win") return this.achievements.onWin(me, e.mode);
+    if (e.type !== "death") return;
+    if (e.killer === me) return this.achievements.onKill(me, e.digger);
+    this.achievements.onDeath(me, e.killer);
     this.deadAt = this.world.tick;
-    this.payOut(d);
+    this.endLife(me);
   }
 
   // into another lobby's world; what the client has is diffed against the new one
@@ -276,7 +296,7 @@ export class Connection {
 
   close() {
     if (this.digger?.alive) {
-      this.payOut(this.digger);
+      this.endLife(this.digger);
       this.world.removeDigger(this.digger);
     }
   }
@@ -296,6 +316,7 @@ export class Connection {
     const entities = new Map(); // id -> { components, fields: [[index, fn]] }
 
     const ranked = [...world.diggers.values()].sort((a, b) => b.shownScore - a.shownScore);
+    this.achievements.tick(me, ranked);
     const rules = this.lobby.rules;
     const arena = rules.arena();
     // someone out of a running round waits for the next one
@@ -379,8 +400,11 @@ export class Connection {
       components: [8],
       fields: [
         // bit 2: the account is loaded (the shop shows field 51's gold);
+        // bit 4: achievement progress is loaded (field 43);
         // bit 8: "YOU HAVE WON"
-        [35, u8(2 | (rules.won?.(me) ? 8 : 0))],
+        [35, u8(2 | 4 | (rules.won?.(me) ? 8 : 0))],
+        // each achievement's progress, 0-100
+        [43, sparse(this.achievements.progress(me), (w, v) => w.u8(v))],
         [44, stringList(this.account?.items || [])],
         [51, f64(this.account?.gold || 0)],
         [37, svar4(cam.x)],

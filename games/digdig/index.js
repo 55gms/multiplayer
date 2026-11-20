@@ -32,9 +32,8 @@ class Lobby {
     this.connections = new Set();
     this.bots = new Set();
     this.world.listeners.add((e) => {
-      if (e.type !== "death") return;
-      for (const c of this.connections) c.onDeath(e.digger);
-      for (const b of this.bots) if (b.d === e.digger) this.bots.delete(b);
+      for (const c of this.connections) c.onWorldEvent(e);
+      if (e.type === "death") for (const b of this.bots) if (b.d === e.digger) this.bots.delete(b);
     });
     this.rules = rulesFor(mode, this);
     this.lobbyFor = lobbyFor;

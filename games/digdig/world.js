@@ -23,7 +23,8 @@ export const M = {
 const TILE_SCORE = { 1: 4, 2: 6, 3: 1, 6: 2, 7: 0, 8: 12, 9: 4 };
 
 const BASE_RADIUS = 25; // a new digger; the client shows score as radius^2 - 625
-const MAX_RADIUS = 220;
+// radius 1000 is 1m score, so every score achievement can be earned
+const MAX_RADIUS = 1100;
 const BASE_SPEED = 14; // units per tick in an open tunnel, at base radius
 const DIG_SLOWDOWN = 0.7; // speed in dirt
 const ATTACK_SPEED = 1.35;
@@ -33,6 +34,17 @@ const DEFEND_REGEN = 3;
 const ATTACK_DRAIN_PER_TICK = 0.003;
 const LAVA_DAMAGE_PER_TICK = 0.012;
 const BOOST_TICKS = 20 * 12;
+// big diggers slowly lose mass, so the board keeps moving; slow enough that a
+// digger can still grow past 1m by digging and kills
+const DECAY_PER_TICK = 0.00003;
+// a chunk nobody has dug for this long, out of every digger's sight, fills back
+// in (ore and all), so a lobby is never mined out
+const REGROW_TICKS = 20 * 90;
+const REGROW_CHECK_TICKS = 20;
+// the arena grows with its biggest digger (and shrinks back), units per tick
+const ARENA_PER_BIGGEST_RADIUS = 7;
+const ARENA_GROW_PER_TICK = 4;
+const ARENA_SHRINK_PER_TICK = 1;
 // a digger taking damage flashes red (and its player's screen shakes): one
 // pulse at most every HURT_PULSE_TICKS, stronger for more damage
 const HURT_PULSE_TICKS = 4;
@@ -41,19 +53,27 @@ const HURT_FULL = 0.15; // damage in one pulse that gives the strongest flash
 export const INPUT_ATTACK = 1;
 export const INPUT_DEFEND = 2;
 
+// Half the area around a digger's camera that the server sends; bigger diggers
+// see further (the client zooms out as they grow).
+export const VIEW_W = 1300;
+export const VIEW_H = 950;
+export const viewScale = (radius) => Math.max(1, radius / 220);
+
 export class Chunk {
   constructor(cx, cy) {
     this.cx = cx;
     this.cy = cy;
     this.dug = new Uint8Array(512); // bit set = dug
     this.version = 0;
+    this.lastDugTick = 0;
   }
   isDug(lx, ly) {
     const i = ly * 64 + lx;
     return (this.dug[i >> 3] >> (i & 7)) & 1;
   }
-  setDug(lx, ly) {
+  setDug(lx, ly, tick) {
     const i = ly * 64 + lx;
+    this.lastDugTick = tick;
     this.dug[i >> 3] |= 1 << (i & 7);
     this.version++;
   }
@@ -125,11 +145,13 @@ export class World {
     this.diggers = new Map();
     // the arena is a circle in the middle of the client's map
     this.center = (WORLD_TILES / 2) * TILE;
-    this.radius = radiusTiles * TILE;
+    this.baseRadius = radiusTiles * TILE;
+    this.radius = this.baseRadius;
     this.listeners = new Set(); // (event) => void: kill, death
     this.materialCache = new Map();
     this.peaceful = false; // no damage (a Battle Royale countdown)
     this.killGold = true; // kills earn a share of the victim's gold (FFA, TDM)
+    this.autoArena = true; // grow with the biggest digger (not in Battle Royale)
   }
 
   chunk(cx, cy) {
@@ -170,7 +192,7 @@ export class World {
   }
 
   dig(tx, ty) {
-    this.chunk(tx >> 6, ty >> 6).setDug(tx & 63, ty & 63);
+    this.chunk(tx >> 6, ty >> 6).setDug(tx & 63, ty & 63, this.tick);
   }
 
   // A free spot: open tunnel or dirt, away from other diggers.
@@ -312,13 +334,39 @@ export class World {
       else d.health = Math.min(1, d.health + regen);
       if (d.health <= 0) this.kill(d);
       if (d.alive) d.maxScore = Math.max(d.maxScore, d.shownScore);
-      // big diggers slowly lose mass, so the board keeps moving
-      if (d.score > 2000) d.score -= d.score * 0.0002;
+      if (d.score > 2000) d.score -= d.score * DECAY_PER_TICK;
       if (d.alive && d.hurt > 0 && this.tick - d.lastPulse >= HURT_PULSE_TICKS) {
         d.hurtPulse = Math.max(48, Math.min(255, Math.round(255 * Math.sqrt(d.hurt / HURT_FULL))));
         d.hurt = 0;
         d.lastPulse = this.tick;
       }
+    }
+    if (this.autoArena) this.resizeArena();
+    if (this.tick % REGROW_CHECK_TICKS === 0) this.regrow();
+  }
+
+  resizeArena() {
+    let biggest = 0;
+    for (const d of this.diggers.values()) biggest = Math.max(biggest, d.radius);
+    const want = Math.max(this.baseRadius, biggest * ARENA_PER_BIGGEST_RADIUS);
+    if (want > this.radius) this.radius = Math.min(want, this.radius + ARENA_GROW_PER_TICK);
+    else if (want < this.radius) this.radius = Math.max(want, this.radius - ARENA_SHRINK_PER_TICK);
+  }
+
+  // Refill chunks left alone for REGROW_TICKS that no digger can see. The
+  // client gets the cleared dug bits like any other change and draws the
+  // tiles from the seed again.
+  regrow() {
+    const half = (TILE * CHUNK) / 2;
+    const diggers = [...this.diggers.values()];
+    for (const [key, c] of this.chunks) {
+      if (this.tick - c.lastDugTick < REGROW_TICKS) continue;
+      const x = c.cx * TILE * CHUNK + half, y = c.cy * TILE * CHUNK + half;
+      const seen = diggers.some((d) => {
+        const s = viewScale(d.radius);
+        return Math.abs(d.x - x) < VIEW_W * s + half + 200 && Math.abs(d.y - y) < VIEW_H * s + half + 200;
+      });
+      if (!seen) this.chunks.delete(key);
     }
   }
 

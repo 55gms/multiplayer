@@ -76,6 +76,11 @@ export function noise(x, y, z, seed) {
   return lerp(lerp(m2, m1, fy), lerp(l2, l1, fy), fx);
 }
 
+// Noise above this is ore (gold, uranium, amethyst). The original client has
+// 0.72; ours is patched to match (4 f64 constants at 310068, 310095, 310131,
+// 310227 of client.wasm 2749f7ba), which gives about 6 times the ore.
+export const ORE_THRESHOLD = 0.62;
+
 // Map flags (component 4 field 11).
 export const FLAG_NO_BIG_VEINS = 1;
 export const FLAG_NO_ROCK_PATCHES = 2;
@@ -98,12 +103,12 @@ export function material(x, y, seed, flags = 0) {
   if (n(0.05, 0.05, 4) > 0 && n(0.015, 0.015, 6) > 0.47) return 7;
   const sx = f(x * 0.03), sy = f(y * 0.03);
   if (!(flags & FLAG_NO_MATERIAL_2)) {
-    if (noise(sx, sy, 8, s) > 0.72) return 2;
-    if (noise(sx, sy, 16, s) > 0.72) return 2;
+    if (noise(sx, sy, 8, s) > ORE_THRESHOLD) return 2;
+    if (noise(sx, sy, 16, s) > ORE_THRESHOLD) return 2;
   }
-  if (noise(sx, sy, 12, s) > 0.72) return 6;
+  if (noise(sx, sy, 12, s) > ORE_THRESHOLD) return 6;
   if (!(flags & FLAG_NO_MATERIAL_9) && n(0.01, 0.01, 14) > 0.5) return 9;
-  if (noise(sx, sy, 18, s) > 0.72) return 1;
+  if (noise(sx, sy, 18, s) > ORE_THRESHOLD) return 1;
   // thin lines along a curve
   const w = f(Math.cos(x * 0.001) * -0.5 + 0.5);
   const fy = f((y / 1000) % 1);

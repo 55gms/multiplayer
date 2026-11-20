@@ -72,10 +72,26 @@ const CLIENT_MESSAGES = {
     [item, pos] = cstring(buf, pos);
     return [{ name: "buy", item }, pos];
   },
+  // Squads: 7 asks for a squad (opening the Squad panel, Find Public), 9 for a
+  // new one (New), 32 to join one by code; each carries a request number the
+  // client counts up, which the answer (server message 18 or 27) repeats
   7: (buf, pos) => {
-    let v;
-    [v, pos] = readVarint(buf, pos);
-    return [{ name: "m7", v }, pos];
+    let request;
+    [request, pos] = readVarint(buf, pos);
+    return [{ name: "squad", request }, pos];
+  },
+  9: (buf, pos) => {
+    let request;
+    [request, pos] = readVarint(buf, pos);
+    return [{ name: "squadNew", request }, pos];
+  },
+  // the Squad panel's Public box
+  17: (buf, pos) => [{ name: "squadPublic", on: buf[pos] === 1 }, pos + 1],
+  32: (buf, pos) => {
+    let request, code;
+    [request, pos] = readVarint(buf, pos);
+    [code, pos] = cstring(buf, pos);
+    return [{ name: "squadJoin", request, code }, pos];
   },
   14: (buf, pos) => {
     let text;

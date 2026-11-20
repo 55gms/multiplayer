@@ -155,6 +155,7 @@ function onConnection(ws, req, release) {
     clearInterval(heartbeat);
     conn.lobby.connections.delete(conn);
     conn.close();
+    conn.leaveSquad();
     release();
     conn.lobby.fillBots();
   };
@@ -182,6 +183,14 @@ export default {
       // the id comes back as the game server's host name, <id>.s.m28n.net
       const id = modeOf(req);
       return res.end(JSON.stringify({ servers: { "vultr-chicago": { id, ipv4: "127.0.0.1", ipv6: "::1" } } }));
+    }
+    // one server by id (api.n.m28.io/server/<id>): joining a squad of another
+    // mode looks its server up this way
+    if (rest === "server") {
+      const id = new URL(req.url, "http://x").searchParams.get("id");
+      if (!MODES.includes(id)) return res.writeHead(404, { "access-control-allow-origin": "*" }).end();
+      res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*", "cache-control": "no-store" });
+      return res.end(JSON.stringify({ id, ipv4: "127.0.0.1", ipv6: "::1" }));
     }
     res.writeHead(404).end();
   },

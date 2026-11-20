@@ -6,19 +6,25 @@ import { TILE, CHUNK, INPUT_ATTACK, INPUT_DEFEND } from "./world.js";
 import { STATE_RUNNING, STATE_WAITING } from "./modes.js";
 import { verifyToken, buySkin, grantGold } from "./accounts.js";
 import { SKINS, skinAt, FACE, SPINNER } from "./skins.js";
+import { Squad, SQUAD_SIZE, SQUAD_MODES, leaveSquad, findSquad, publicSquad } from "./squads.js";
 
 const WORLD_ID = 1;
 const VIEW = entityId(1);
 const ARENA = entityId(2);
 const ROLE = entityId(3);
+const SQUAD = entityId(4);
 // Half the area a client can see, in world units (the client shows about
 // 1500 x 1050 units on a 1000 x 700 window; bigger windows zoom out).
 const VIEW_W = 1300;
 const VIEW_H = 950;
 const DEATH_SHOW_TICKS = 40;
 // Server messages (type 5) the client runs: 6 signs the client out (it forgets
-// its saved login).
+// its saved login); 18 and 27 show why a squad request failed; 26 says
+// squads work here.
 const MSG_SIGN_OUT = 6;
+const MSG_SQUAD = 18;
+const MSG_SQUAD_JOINED = 27;
+const MSG_SQUADS_READY = 26;
 // gold grants need ids no other run of this server uses
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const GREY = [153, 153, 153];
@@ -73,6 +79,7 @@ export class Connection {
     // the 55GMS account (accounts.js), null for a guest
     this.account = null;
     this.skins = [0, 0]; // what the client has equipped, as far as the account owns it
+    this.squad = null; // squads.js
     this.tick = 0;
     this.digger = null;
     this.deadAt = 0;
@@ -107,6 +114,8 @@ export class Connection {
     if (!p) return;
     if (p.type === 48) {
       this.started = true;
+      // message 26: squads are ready (the Squad panel waits for it)
+      this.sendMessages([[MSG_SQUADS_READY, Buffer.alloc(0)]]);
       return;
     }
     if (p.type !== 1) return; // 2 acknowledges our snapshots
@@ -143,6 +152,10 @@ export class Connection {
     } else if (m.name === "equip") {
       this.wanted = [m.face, m.spinner];
       this.applySkins();
+    } else if (m.name === "squad" || m.name === "squadNew" || m.name === "squadJoin") {
+      this.onSquad(m);
+    } else if (m.name === "squadPublic") {
+      if (this.squad) this.squad.public = m.on;
     } else if (m.name === "input" && this.digger?.alive) {
       const d = this.digger;
       const throttle = Math.max(0, Math.min(1, m.distance / Math.max(60, d.radius * 3)));
@@ -193,6 +206,38 @@ export class Connection {
     if (this.digger?.alive) this.digger.skins = this.skins;
   }
 
+  // Squad requests (squads.js). The client watches the squad entity: a
+  // request has worked once its code (field 57) changes, a join once it is
+  // the code typed, and the panel then shows the members. Messages 18 and 27
+  // (with the request number) put up a text instead, for what went wrong.
+  onSquad(m) {
+    const mode = this.lobby.mode;
+    const refuse = (id, text) => this.sendMessages([[id, Buffer.concat([Buffer.from(varintBytes(m.request)), Buffer.from(`${text}\0`)])]]);
+    if (!SQUAD_MODES.has(mode)) return refuse(m.name === "squadJoin" ? MSG_SQUAD_JOINED : MSG_SQUAD, "Squads not allowed in this game mode");
+    if (m.name === "squadJoin") {
+      const squad = findSquad(m.code, mode);
+      if (!squad) return refuse(MSG_SQUAD_JOINED, "Squad doesn't exist");
+      if (squad.full && squad !== this.squad) return refuse(MSG_SQUAD_JOINED, "Squad is full");
+      return this.joinSquad(squad);
+    }
+    // New, or the first request: a squad of the player's own. Find Public,
+    // from a squad: another public squad with room, else a new public one.
+    if (m.name === "squadNew" || !this.squad) this.joinSquad(new Squad(mode));
+    else this.joinSquad(publicSquad(mode, this.squad) || new Squad(mode, true));
+  }
+
+  // into a squad, and into its members' lobby
+  joinSquad(squad) {
+    squad.add(this);
+    this.log("digdig_squad", { code: squad.code, mode: squad.mode, members: squad.members.length });
+    const mate = squad.members.find((c) => c !== this);
+    if (mate && mate.lobby !== this.lobby && mate.lobby.mode === this.lobby.mode) mate.lobby.take(this);
+  }
+
+  leaveSquad() {
+    leaveSquad(this);
+  }
+
   // A life's gold goes to the account when it ends.
   payOut(d) {
     if (!d || d.paid || !this.account) return;
@@ -207,7 +252,7 @@ export class Connection {
 
   spawn() {
     this.wantsPlay = false;
-    this.digger = this.world.addDigger({ name: this.nickname || "Unnamed" });
+    this.digger = this.world.addDigger({ name: this.nickname || "Unnamed", squad: this.squad });
     this.digger.skins = this.skins;
     if (process.env.DIGDIG_DEBUG) this.log("digdig_spawn", { id: this.digger.id });
     this.deadAt = 0;
@@ -283,6 +328,11 @@ export class Connection {
       if (Math.abs(d.x - cam.x) < VIEW_W + d.radius && Math.abs(d.y - cam.y) < VIEW_H + d.radius) visible.push(d);
     }
     if (me && !me.alive && !visible.includes(me)) visible.push(me);
+    // squad mates wherever they are: the client's squad list shows their health
+    for (const c of this.squad?.members || []) {
+      const d = c.digger;
+      if (d?.alive && c.lobby === this.lobby && !visible.includes(d)) visible.push(d);
+    }
     for (const d of visible) {
       entities.set(diggerEntity(d), {
         components: [0, 1, 2, 3, 7, 10],
@@ -305,6 +355,24 @@ export class Connection {
     // Tag: an entity with component 11 while the player plays, field 71 its
     // role (0 a seeker, else a hider); the client shows "You are a
     // seeker/hider" for 10 s whenever it changes
+    // The squad: component 9, four slots each of status (56: 0 empty, 1 in the
+    // menu, 2 playing), face (59), name (60) and digger (61); 57 its code,
+    // 63 whether it is public
+    if (this.squad) {
+      const slots = Array.from({ length: SQUAD_SIZE }, (_, i) => this.squad.members[i] || null);
+      const alive = (c) => c?.digger?.alive && c.lobby === this.lobby;
+      entities.set(SQUAD, {
+        components: [9],
+        fields: [
+          [56, sparse(slots, (w, c) => w.u8(!c ? 0 : alive(c) ? 2 : 1))],
+          [57, str(this.squad.code)],
+          [59, sparse(slots, (w, c) => w.u8(c ? c.skins[0] : 0))],
+          [60, sparse(slots, (w, c) => w.string(c ? c.nickname || "Unnamed" : ""))],
+          [61, sparse(slots, (w, c) => w.id(alive(c) ? diggerEntity(c.digger) : 0))],
+          [63, u8(this.squad.public ? 1 : 0)],
+        ],
+      });
+    }
     if (rules.roundMs && me?.alive) entities.set(ROLE, { components: [11], fields: [[71, u8(me.seeker ? 0 : 1)]] });
     entities.set(VIEW, {
       components: [8],
@@ -367,6 +435,14 @@ export class Connection {
       const i = (ty & 63) * 64 + (tx & 63);
       arr[i >> 3] |= 1 << (i & 7);
     };
+    // squad mates share what they see near them
+    for (const c of this.squad?.members || []) {
+      const d = c.digger;
+      if (c === this || !d?.alive || c.lobby !== this.lobby) continue;
+      const mx = Math.floor(d.x / TILE), my = Math.floor(d.y / TILE);
+      const r = Math.ceil(d.radius / TILE) + d.vision;
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) if (dx * dx + dy * dy <= r * r) set(mx + dx, my + dy);
+    }
     if (!me) return out;
     const ctx = Math.floor(me.x / TILE), cty = Math.floor(me.y / TILE);
     const disc = Math.ceil(me.radius / TILE) + me.vision;

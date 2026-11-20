@@ -12,6 +12,7 @@ One server for the multiplayer games on [55GMS](https://github.com/55gms/55GMS).
 | digdig.io                            | `/api/mp/digdig/play`, `/api/mp/digdig/servers`                                           | M28's own protocol (`games/digdig/README.md`); the game runs here, with bots       |
 | Smash Karts                          | `/api/mp/smashkarts/ns`, `/master`, `/game`, `/remote/<ticket>`                           | Photon PUN 2 (binary protocol 1.8 over WebSocket); PLAY goes on to the official Photon cloud |
 | Kart Bros                            | `/api/mp/kartbros/play`, `/api/mp/kartbros/ping`                                          | Blue Wizard's session server (MemoryPack frames over WebSocket): lobbies, host, relay |
+| Fartnership                          | `/api/mp/fartnership/ws`, `/api/mp/fartnership/api/presence`                              | JSON over WebSocket; rooms by 4-letter code, the game's own world runs here       |
 
 `GET /api/mp/health` reports the games and open connections. Every minute the server logs one `stats` line (connections, rooms, players, bytes).
 
@@ -30,6 +31,7 @@ MP_DEBUG=1 node .     # also log every operation with its parameters
 - `src/photon/` the Photon layer any Photon game can reuse: `protocol18.js` (value codec), `codes.js` (operation, parameter and event codes), `peer.js` (framing, ping, limits)
 - `games/bros/` the seven Blue Wizard lockstep games: `wire.js` (message bytes), `clock.js` (the shared 60 Hz tick), `duel.js` (one against one), `lobby.js` (FootballBros, HockeyBros, FightBros), `index.js` (sockets, limits, the region ping)
 - `games/ducklings/` a pass-through relay to Ducklings.io's own server
+- `games/fartnership/` rooms and the match loop (`rooms.js`), sockets and the presence count (`index.js`), and `sim.js`, the game's own simulation cut from its bundle by `tools/fartnership-sim.mjs`
 - `games/digdig/` digdig.io: the packet cipher (`cipher.js`), the client's stream and snapshots (`stream.js`, `snapshot.js`), the map (`terrain.js`, the same as the client's), the game (`world.js`), what each player is shown (`connection.js`), bots (`bots.js`) and lobbies (`index.js`). `DIGDIG_ARENA_TILES` sets the arena radius (200 tiles), `DIGDIG_DEBUG=1` logs every client message. `tools/digdig/` holds the tools that worked the protocol out
 - `games/smashkarts/` the three Photon roles for Smash Karts (copies of 1v1's `rooms.js`, `game.js` and `presence.js`, without the referee and ranked code), and `remote.js`, the relay to the official Photon cloud
 - `games/kartbros/` Kart Bros's session server: `wire.js` (frames, MemoryPack, the message ids and fields) and `index.js` (sessions, members, host, relay)
@@ -126,6 +128,35 @@ What the server does:
 - Race end: the host reports each finish (`player_finished`, checked against a capture with bots finishing); the server passes it on and keeps the order of the human racers. The rest is from the build's own messages, as no capture got that far: the first human finish starts a 30 s limit (`race_timeout_update`); when every racer still connected has finished, the server sends `race_finished` with the order and who left. When time runs out it asks the host (`request_race_order`) and finishes with the host's `race_order_response`, or after 5 s with the order it has. `rematch_ready` is counted into `rematch_status_update`, and the host's `rematch_triggered` clears it.
 - Leaving or dropping: `client_disconnected` to the rest; if the host left, the lowest remaining player becomes host (`host_changed`, epoch + 1, reason HostLeft). `host_transfer_request` (MAKE HOST) and `host_claim` (only once the host is gone), `set_member_role` (player or spectator; refused mid-race, when seats are full, or for the last player) and `member_away_report` are kept here too. Rejoining a dropped session (`resume_session`) is refused (`RoomGone`); the player joins again with the code.
 - `ping` gets `pong`.
+
+## Fartnership
+
+Fartnership (`static/misc/fartnership/` in 55GMS) is a Vite-built 3D rafting game whose online rooms ran on its developer's server, `wss://64-225-56-42.sslip.io/ws`, a bare-IP host that may go away. The game page in 55GMS sends that socket to `/api/mp/fartnership/ws` and the menu's presence call (`/api/presence?id=…&s=menu|game`) to `/api/mp/fartnership/api/presence` on the page's own host; `localStorage["gms-mp-base"]` overrides it for local work, as for Ducklings.io.
+
+The server is authoritative, as the original was. The client sends its stick and fart button about 30 times a second; the server steps the world at the game's fixed 60 Hz and sends a snapshot every third step (20 a second), which clients draw 100 ms behind, predicting only their own raft. The world is the game's own: `sim.js` is the class the client runs for local play (and to build its first online frame), cut out of the bundle with everything it does not reach dropped. So snapshots, events and results are the client's own format by construction. A new build of the game is picked up with `node tools/fartnership-sim.mjs <path to its index-*.js>` (it uses `npx esbuild`); each export is found by a string next to it, and the script fails if one is missing.
+
+Every message is a JSON text frame with a type in `t`. Client to server:
+
+| `t`         | Body                                                                                | Server                                                                                                  |
+| ----------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `hello`     | `v` (3)                                                                             | `welcome` with the connection's id (also sent on connect)                                               |
+| `ping`      | `c`                                                                                 | `pong` with the same `c`                                                                                |
+| `create`    | `players`: `[{name, animal, tint, fart, outfit}]`                                   | a new room, this connection its host                                                                    |
+| `join`      | `code`, `players`                                                                   | joins in the lobby only; bots give up their seats to people                                             |
+| `leave`     |                                                                                     | `left`; the others get the room; mid-game the leaver's seat is steered by the game's bot                 |
+| `config`    | `config`: any of `mode`, `courseId`, `chill`, `teamSize` (host, lobby)              | party modes take their arena (`sumo` → `arena-sky`, the others `arena-pool`)                            |
+| `bots`      | `count` (host, lobby)                                                               | up to 4 players in co-op, 8 otherwise                                                                   |
+| `start`     | (host, lobby)                                                                       | `room` (phase `playing`), then `start` with `setup`, then `snap`s                                       |
+| `in`        | `p`: `[[move, fart], …]`, one per player of this connection                         | the world's input                                                                                       |
+| `respawn`   |                                                                                     | puts the sender's raft back at its checkpoint                                                           |
+| `emote`     | `pid`, `k` (0–3)                                                                    | `emote` to the room with `text`, so everyone sees the same name in "It was {name}!"                     |
+| `vote`      | `target` (a pid; results only, one per connection, can change)                      | `votes` with `tally` `{pid: count}`                                                                     |
+| `lobby`     | (host)                                                                              | back to the lobby: `room` with phase `lobby`                                                            |
+| `sound`     | `id`, `data` (a custom fart, base64 WAV, at most 200 KiB; one every 2 s)            | relayed to the room; newcomers get everyone's on joining                                                |
+
+Server to client: `welcome`, `pong`, `room` (`room`: `{code, host, phase, config, players: [{id, name, animal, tint, fart, outfit, bot}]}`, `you`: this connection's player ids), `left`, `start` (`setup`: `{courseId, mode, chill, teams: [[player]]}`, the teams made as the game makes them for local play), `snap` (`s`: the world's snapshot, `ev`: its events since the last one), `results` (the world's results, once, when it ends), `votes`, `emote`, `sound`, `error` (`msg`, shown to the player).
+
+A match ends when the world says so, or after 15 minutes; the world runs on for 3 s under the results screen. A room is removed when its last person leaves. This server's limits apply, except that a message may be 256 KiB for the custom sounds. An 8-raft match of bots costs about 8% of a core (people cost less than bots) and sends 2.6 KB snapshots, about 420 KB/s to a full room, so rooms are capped at 60.
 
 ## Production
 

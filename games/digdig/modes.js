@@ -41,6 +41,7 @@ export class BattleRoyale {
     this.lobby = lobby;
     this.world = lobby.world;
     this.fullRadius = this.world.radius;
+    this.world.autoArena = false; // the round shrinks it
     this.state = "waiting";
     this.until = 0;
     this.startTick = 0;

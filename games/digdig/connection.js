@@ -2,7 +2,7 @@
 import { ClientCipher, ServerCipher } from "./cipher.js";
 import { unmaskClient, readVarint, readClientMessages, varint as varintBytes, STREAM_MASK } from "./stream.js";
 import { Writer, writeEntity, entityId, snapshot } from "./snapshot.js";
-import { TILE, CHUNK, INPUT_ATTACK, INPUT_DEFEND } from "./world.js";
+import { TILE, CHUNK, INPUT_ATTACK, INPUT_DEFEND, VIEW_W as BASE_VIEW_W, VIEW_H as BASE_VIEW_H, viewScale } from "./world.js";
 import { STATE_RUNNING, STATE_WAITING } from "./modes.js";
 import { verifyToken, buySkin, grantGold } from "./accounts.js";
 import { SKINS, skinAt, FACE, SPINNER } from "./skins.js";
@@ -16,8 +16,6 @@ const ROLE = entityId(3);
 const SQUAD = entityId(4);
 // Half the area a client can see, in world units (the client shows about
 // 1500 x 1050 units on a 1000 x 700 window; bigger windows zoom out).
-const VIEW_W = 1300;
-const VIEW_H = 950;
 const DEATH_SHOW_TICKS = 40;
 // Server messages (type 5) the client runs: 6 signs the client out (it forgets
 // its saved login); 18 and 27 show why a squad request failed; 26 says
@@ -313,6 +311,9 @@ export class Connection {
       this.digger = null;
     }
     const cam = this.camera;
+    // a big digger sees further
+    const scale = viewScale(me ? me.radius : 0);
+    const VIEW_W = BASE_VIEW_W * scale, VIEW_H = BASE_VIEW_H * scale;
     const entities = new Map(); // id -> { components, fields: [[index, fn]] }
 
     const ranked = [...world.diggers.values()].sort((a, b) => b.shownScore - a.shownScore);
@@ -427,7 +428,7 @@ export class Connection {
     });
 
     // terrain around the camera
-    const reveal = this.revealAround(cam, me);
+    const reveal = this.revealAround(cam, me, VIEW_W, VIEW_H);
     const cx0 = Math.max(0, Math.floor((cam.x - VIEW_W - 200) / (TILE * CHUNK)));
     const cx1 = Math.floor((cam.x + VIEW_W + 200) / (TILE * CHUNK));
     const cy0 = Math.max(0, Math.floor((cam.y - VIEW_H - 200) / (TILE * CHUNK)));
@@ -452,7 +453,7 @@ export class Connection {
 
   // Tiles this client sees: a disc around its digger, and tunnels it can see
   // down (dug tiles reached from it, and the walls next to them).
-  revealAround(cam, me) {
+  revealAround(cam, me, VIEW_W, VIEW_H) {
     const world = this.world;
     const out = new Map();
     const set = (tx, ty) => {
@@ -481,7 +482,7 @@ export class Connection {
     const seen = new Set();
     const queue = [[ctx, cty]];
     seen.add(ctx * 65536 + cty);
-    while (queue.length && seen.size < 12000) {
+    while (queue.length && seen.size < Math.min(60000, 12000 * (VIEW_W / BASE_VIEW_W) ** 2)) {
       const [tx, ty] = queue.pop();
       for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
         const nx = tx + ox, ny = ty + oy;

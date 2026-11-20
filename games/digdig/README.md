@@ -202,6 +202,16 @@ seed, and 11, the map flags). Materials: 1 amethyst (vision), 2 gold, 3 dirt,
 5 bedrock (cannot be dug), 6 uranium (mass boost), 7 lava, 8 unknown (teal),
 9 quartz (shield), going by the client's colours and changelog.
 
+Ore (gold, uranium, amethyst) is noise above 0.62 here, not the original
+0.72: the 55GMS copy of client.wasm has the four f64 constants at file offsets
+310068, 310095, 310131 and 310227 changed to match, which gives about 6 times
+the ore. A new client build needs the same patch, or its tiles will not match.
+
+The world regrows: a chunk nobody has dug for 90 s that no digger can see is
+dropped, and the client draws it from the seed again (ore and all). The arena
+grows to 7 times the biggest digger's radius (outside Battle Royale), and a
+digger bigger than radius 220 is sent a proportionally bigger view.
+
 A digger is an entity with components 0, 1, 2, 3, 7 and 10. The client draws
 another player's digger only while some tile under it (radius + 16) is set in a
 chunk's reveal layer; that is how the server decides what each player sees.
@@ -260,9 +270,8 @@ message 22 `[varint index]` puts up the "Achievement unlocked" card; view field
 client keeps it in localStorage `digdig_achievement_cache` as
 `{"<id>": percent}`. 55GMS keeps an account's unlocked achievements and
 lifetime totals (kills, dirt, gold, tags, Battle Royale wins, ores) and pays
-the rewards (`/api/digdig/internal/achievement`, `/stats`). Our diggers stop
-growing at about 47.8k score, so `score_2`, `score_3` and `deflation` (100k,
-1m) cannot be earned yet.
+the rewards (`/api/digdig/internal/achievement`, `/stats`). Diggers grow to
+radius 1100 (about 1.21m score), so every score achievement can be earned.
 
 ## Maze
 

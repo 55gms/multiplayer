@@ -25,6 +25,7 @@ const MSG_SIGN_OUT = 6;
 const MSG_SQUAD = 18;
 const MSG_SQUAD_JOINED = 27;
 const MSG_SQUADS_READY = 26;
+const MSG_HURT = 25; // [entity][u8 strength]: the digger flashes red; the player's own also shakes the screen
 // gold grants need ids no other run of this server uses
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const GREY = [153, 153, 153];
@@ -420,6 +421,9 @@ export class Connection {
     }
 
     this.sendSnapshot(entities, chunkFields);
+    // after the snapshot, so the client already has the entity
+    const hurt = visible.filter((d) => d.hurtPulse && this.known.has(diggerEntity(d)));
+    if (hurt.length) this.sendMessages(hurt.map((d) => [MSG_HURT, new Writer().id(diggerEntity(d)).u8(d.hurtPulse).done()]));
   }
 
   // Tiles this client sees: a disc around its digger, and tunnels it can see

@@ -24,8 +24,8 @@ const TILE_SCORE = { 1: 4, 2: 6, 3: 1, 6: 2, 7: 0, 8: 12, 9: 4 };
 
 const BASE_RADIUS = 25; // a new digger; the client shows score as radius^2 - 625
 const MAX_RADIUS = 220;
-const BASE_SPEED = 9; // units per tick in an open tunnel, at base radius
-const DIG_SLOWDOWN = 0.55; // speed in dirt
+const BASE_SPEED = 11; // units per tick in an open tunnel, at base radius
+const DIG_SLOWDOWN = 0.62; // speed in dirt
 const ATTACK_SPEED = 1.35;
 const DEFEND_SPEED = 0.6;
 const REGEN_PER_TICK = 0.004;
@@ -33,6 +33,10 @@ const DEFEND_REGEN = 3;
 const ATTACK_DRAIN_PER_TICK = 0.003;
 const LAVA_DAMAGE_PER_TICK = 0.012;
 const BOOST_TICKS = 20 * 12;
+// a digger taking damage flashes red (and its player's screen shakes): one
+// pulse at most every HURT_PULSE_TICKS, stronger for more damage
+const HURT_PULSE_TICKS = 4;
+const HURT_FULL = 0.15; // damage in one pulse that gives the strongest flash
 
 export const INPUT_ATTACK = 1;
 export const INPUT_DEFEND = 2;
@@ -76,6 +80,9 @@ export class Digger {
     this.amethyst = 0; // ticks of extra vision left
     this.quartz = 0; // ticks of shield left
     this.lastHitBy = null;
+    this.hurt = 0; // damage since the last pulse
+    this.hurtPulse = 0; // this tick's flash, 1-255 (0 none)
+    this.lastPulse = -HURT_PULSE_TICKS;
     this.kills = 0;
     this.spawnTick = world.tick;
     // for the death screen
@@ -229,6 +236,7 @@ export class World {
     if (d.quartz > 0) amount /= 2;
     if (d.input.buttons & INPUT_DEFEND) amount *= 0.6;
     d.health -= amount;
+    d.hurt += amount;
     if (from) d.lastHitBy = from;
     if (d.health <= 0) this.kill(d);
   }
@@ -266,6 +274,7 @@ export class World {
   step() {
     this.tick++;
     const list = [...this.diggers.values()];
+    for (const d of list) d.hurtPulse = 0;
     for (const d of list) this.move(d);
     this.collide(list);
     for (const d of list) {
@@ -280,6 +289,11 @@ export class World {
       if (d.alive) d.maxScore = Math.max(d.maxScore, d.shownScore);
       // big diggers slowly lose mass, so the board keeps moving
       if (d.score > 2000) d.score -= d.score * 0.0002;
+      if (d.alive && d.hurt > 0 && this.tick - d.lastPulse >= HURT_PULSE_TICKS) {
+        d.hurtPulse = Math.max(48, Math.min(255, Math.round(255 * Math.sqrt(d.hurt / HURT_FULL))));
+        d.hurt = 0;
+        d.lastPulse = this.tick;
+      }
     }
   }
 

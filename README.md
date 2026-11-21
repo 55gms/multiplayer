@@ -12,6 +12,7 @@ One server for the multiplayer games on [55GMS](https://github.com/55gms/55GMS).
 | digdig.io                            | `/api/mp/digdig/play`, `/api/mp/digdig/servers`                                           | M28's own protocol (`games/digdig/README.md`); the game runs here, with bots       |
 | Smash Karts                          | `/api/mp/smashkarts/ns`, `/master`, `/game`, `/remote/<ticket>`                           | Photon PUN 2 (binary protocol 1.8 over WebSocket); PLAY goes on to the official Photon cloud |
 | Kart Bros                            | `/api/mp/kartbros/play`, `/api/mp/kartbros/ping`                                          | Blue Wizard's session server (MemoryPack frames over WebSocket): lobbies, host, relay |
+| Bike Bros                            | `/api/mp/bikebros/play`, `/api/mp/bikebros/ping`                                          | Kart Bros's session server, with its own sessions                                  |
 | Fartnership                          | `/api/mp/fartnership/ws`, `/api/mp/fartnership/api/presence`                              | JSON over WebSocket; rooms by 4-letter code, the game's own world runs here       |
 
 `GET /api/mp/health` reports the games and open connections. Every minute the server logs one `stats` line (connections, rooms, players, bytes).
@@ -34,7 +35,7 @@ MP_DEBUG=1 node .     # also log every operation with its parameters
 - `games/fartnership/` rooms and the match loop (`rooms.js`), sockets and the presence count (`index.js`), and `sim.js`, the game's own simulation cut from its bundle by `tools/fartnership-sim.mjs`
 - `games/digdig/` digdig.io: the packet cipher (`cipher.js`), the client's stream and snapshots (`stream.js`, `snapshot.js`), the map (`terrain.js`, the same as the client's), the game (`world.js`), what each player is shown (`connection.js`), bots (`bots.js`) and lobbies (`index.js`). `DIGDIG_ARENA_TILES` sets the arena radius (200 tiles), `DIGDIG_DEBUG=1` logs every client message. `tools/digdig/` holds the tools that worked the protocol out
 - `games/smashkarts/` the three Photon roles for Smash Karts (copies of 1v1's `rooms.js`, `game.js` and `presence.js`, without the referee and ranked code), and `remote.js`, the relay to the official Photon cloud
-- `games/kartbros/` Kart Bros's session server: `wire.js` (frames, MemoryPack, the message ids and fields) and `index.js` (sessions, members, host, relay)
+- `games/kartbros/` Kart Bros's session server, also Bike Bros's: `wire.js` (frames, MemoryPack, the message ids and fields) and `index.js` (`sessionGame(name)`: sessions, members, host, relay)
 - `games/1v1/` the three Photon roles over one in-memory room registry (`rooms.js`), 55GMS accounts (`accounts.js`) and the match referee (`referee.js`)
 
 ## 1v1.lol
@@ -128,6 +129,12 @@ What the server does:
 - Race end: the host reports each finish (`player_finished`, checked against a capture with bots finishing); the server passes it on and keeps the order of the human racers. The rest is from the build's own messages, as no capture got that far: the first human finish starts a 30 s limit (`race_timeout_update`); when every racer still connected has finished, the server sends `race_finished` with the order and who left. When time runs out it asks the host (`request_race_order`) and finishes with the host's `race_order_response`, or after 5 s with the order it has. `rematch_ready` is counted into `rematch_status_update`, and the host's `rematch_triggered` clears it.
 - Leaving or dropping: `client_disconnected` to the rest; if the host left, the lowest remaining player becomes host (`host_changed`, epoch + 1, reason HostLeft). `host_transfer_request` (MAKE HOST) and `host_claim` (only once the host is gone), `set_member_role` (player or spectator; refused mid-race, when seats are full, or for the last player) and `member_away_report` are kept here too. Rejoining a dropped session (`resume_session`) is refused (`RoomGone`); the player joins again with the code.
 - `ping` gets `pong`.
+
+## Bike Bros
+
+Bike Bros (Unity 6, the same studio's downhill racer) plays on Kart Bros's servers: its build dials the same `wss://kart{da,ea,eu,mw,we}.kartbros.io/<n>` and pings the same `/ping`, and its session messages are Kart Bros's (the same registered names and fields; it only lacks the cup messages). So `/api/mp/bikebros/` is the same server as Kart Bros's (`sessionGame("bikebros")` in `games/kartbros/index.js`) with its own sessions, so a Kart Bros code never finds a Bike Bros lobby. The 55GMS page (`static/misc/bike-bros/index.html`) sends its socket and pings there.
+
+Checked with two headless clients of build 1.19 against this server: host, join by the three words, ready, race start roster, intro sync, the countdown (stamped here) and the race's state frames all work. Software-rendered clients are slow enough to reach the game's own 30 s intro watchdog, against Blue Wizard's server as well as this one.
 
 ## Fartnership
 

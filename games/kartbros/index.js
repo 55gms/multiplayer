@@ -37,16 +37,16 @@ const ROLE_REFUSAL = { playerSeatsFull: 0, spectatorSeatsFull: 1, raceActive: 2,
 const HOST_REASON = { hostLeft: 0, transfer: 1, claim: 2 };
 const RESUME_FAIL = { invalidToken: 0, versionMismatch: 1, roomGone: 2 };
 
-const sessions = new Map();
 let nextConnection = 1;
-const connections = new Set();
 
 const text = (s, max = MAX_TEXT) =>
   typeof s === "string" ? s.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, max) : "";
 
 class Member {
-  constructor(ws, ip) {
+  constructor(ws, ip, game) {
     this.id = nextConnection++;
+    // The game's own sessions: a Kart Bros code never finds a Bike Bros lobby.
+    this.game = game;
     this.ws = ws;
     this.ip = ip;
     this.alive = true;
@@ -65,7 +65,7 @@ class Member {
   sendFrames(frames) {
     if (this.closed || this.ws.readyState !== this.ws.OPEN) return;
     if (this.ws.bufferedAmount > MAX_BUFFERED) {
-      log("slow_close", { game: "kartbros", client: this.id });
+      log("slow_close", { game: this.game.name, client: this.id });
       return this.close();
     }
     this.ws.send(pack(frames), { binary: true });
@@ -230,6 +230,7 @@ function welcome(member, session) {
 
 function createSession(member, msg) {
   if (member.session) return;
+  const { sessions } = member.game;
   const code = String(msg.sessionId || "").toUpperCase();
   if (!CODE.test(code) || sessions.has(code) || sessions.size >= MAX_SESSIONS) {
     return sendError(member, "Couldn't create the lobby. Try again!");
@@ -245,7 +246,7 @@ function createSession(member, msg) {
     serverFrame("session_created", { sessionId: code, clientId: member.clientId, playerId: 0 }),
     member.seq(serverFrame("session_roles", { spectatorIds: [], yourRole: member.role })),
   ]);
-  log("kart_session", { code, client: member.id });
+  log("kart_session", { game: member.game.name, code, client: member.id });
 }
 
 function pickInfo(msg) {
@@ -259,7 +260,7 @@ function pickInfo(msg) {
 
 function joinSession(member, msg) {
   if (member.session) return;
-  const session = sessions.get(String(msg.sessionId || "").toUpperCase());
+  const session = member.game.sessions.get(String(msg.sessionId || "").toUpperCase());
   if (!session) return member.sendFrames([serverFrame("invalid_session", {})]);
   let role = ROLE.player;
   if (session.count(ROLE.player) >= MAX_PLAYERS) {
@@ -323,7 +324,7 @@ function leave(member) {
   member.session = null;
   if (!session.members.size) {
     session.clearRaceTimers();
-    sessions.delete(session.code);
+    member.game.sessions.delete(session.code);
     return;
   }
   session.broadcast(
@@ -459,80 +460,86 @@ function onFrame(member, frame) {
   for (const m of session.others(member)) m.sendFrames([isSequenced ? m.seq(stamped) : stamped]);
 }
 
-const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
+// One server per game that speaks this protocol, each with its own sessions.
+export function sessionGame(name) {
+  const game = { name, sessions: new Map(), connections: new Set() };
+  const { sessions, connections } = game;
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
 
-const heartbeat = setInterval(() => {
-  for (const m of connections) {
-    if (!m.alive) {
-      m.close();
-      continue;
+  const heartbeat = setInterval(() => {
+    for (const m of connections) {
+      if (!m.alive) {
+        m.close();
+        continue;
+      }
+      m.alive = false;
+      m.ws.ping();
     }
-    m.alive = false;
-    m.ws.ping();
+  }, HEARTBEAT_MS);
+  heartbeat.unref();
+
+  function onConnection(ws, req, release) {
+    const member = new Member(ws, clientIp(req), game);
+    connections.add(member);
+    ws.on("pong", () => (member.alive = true));
+    ws.on("message", (data, isBinary) => {
+      if (!member.limiter.allow()) {
+        log("rate_close", { game: name, client: member.id, ip: member.ip });
+        return member.close();
+      }
+      if (!isBinary) return;
+      try {
+        onFrame(member, Buffer.isBuffer(data) ? data : Buffer.concat(data));
+      } catch (err) {
+        log("bad_message", { game: name, client: member.id, ip: member.ip, error: String(err.message || err) });
+        member.close();
+      }
+    });
+    const done = () => {
+      if (member.closed) return;
+      member.closed = true;
+      connections.delete(member);
+      release();
+      leave(member);
+    };
+    ws.on("close", done);
+    ws.on("error", done);
   }
-}, HEARTBEAT_MS);
-heartbeat.unref();
 
-function onConnection(ws, req, release) {
-  const member = new Member(ws, clientIp(req));
-  connections.add(member);
-  ws.on("pong", () => (member.alive = true));
-  ws.on("message", (data, isBinary) => {
-    if (!member.limiter.allow()) {
-      log("rate_close", { game: "kartbros", client: member.id, ip: member.ip });
-      return member.close();
-    }
-    if (!isBinary) return;
-    try {
-      onFrame(member, Buffer.isBuffer(data) ? data : Buffer.concat(data));
-    } catch (err) {
-      log("bad_message", { game: "kartbros", client: member.id, ip: member.ip, error: String(err.message || err) });
-      member.close();
-    }
-  });
-  const done = () => {
-    if (member.closed) return;
-    member.closed = true;
-    connections.delete(member);
-    release();
-    leave(member);
+  return {
+    name,
+    upgrade(req, socket, head, rest) {
+      if (rest !== "play") return socket.destroy();
+      const ip = clientIp(req);
+      const release = acceptConnection(ip);
+      if (!release) {
+        log("ip_cap", { game: name, ip });
+        socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+        return socket.destroy();
+      }
+      socket.once("close", release);
+      wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, req, release));
+    },
+    http(req, res, rest) {
+      if (rest === "ping") {
+        const region = new URL(req.url, "http://x").searchParams.get("region") || REGION;
+        const ok = region.toUpperCase() === REGION;
+        res.writeHead(ok ? 200 : 404, {
+          "content-type": "text/plain",
+          "access-control-allow-origin": "*",
+          "cache-control": "no-store",
+        });
+        return res.end(ok ? "pong\n" : "");
+      }
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end();
+    },
+    stats() {
+      let players = 0;
+      for (const s of sessions.values()) players += s.members.size;
+      return { connections: connections.size, sessions: sessions.size, players };
+    },
   };
-  ws.on("close", done);
-  ws.on("error", done);
 }
 
-export default {
-  name: "kartbros",
-  upgrade(req, socket, head, rest) {
-    if (rest !== "play") return socket.destroy();
-    const ip = clientIp(req);
-    const release = acceptConnection(ip);
-    if (!release) {
-      log("ip_cap", { game: "kartbros", ip });
-      socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
-      return socket.destroy();
-    }
-    socket.once("close", release);
-    wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, req, release));
-  },
-  http(req, res, rest) {
-    if (rest === "ping") {
-      const region = new URL(req.url, "http://x").searchParams.get("region") || REGION;
-      const ok = region.toUpperCase() === REGION;
-      res.writeHead(ok ? 200 : 404, {
-        "content-type": "text/plain",
-        "access-control-allow-origin": "*",
-        "cache-control": "no-store",
-      });
-      return res.end(ok ? "pong\n" : "");
-    }
-    res.writeHead(404, { "content-type": "text/plain" });
-    res.end();
-  },
-  stats() {
-    let players = 0;
-    for (const s of sessions.values()) players += s.members.size;
-    return { connections: connections.size, sessions: sessions.size, players };
-  },
-};
-
+export default sessionGame("kartbros");

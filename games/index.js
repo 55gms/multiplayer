@@ -4,7 +4,7 @@ import ducklings from "./ducklings/index.js";
 import fartnership from "./fartnership/index.js";
 import digdig from "./digdig/index.js";
 import smashkarts from "./smashkarts/index.js";
-import kartbros from "./kartbros/index.js";
+import kartbros, { sessionGame } from "./kartbros/index.js";
 import { basketbros, soccerbros, baseballbros, footballbros, hockeybros, wrestlebros, fightbros } from "./bros/index.js";
 
 export default {
@@ -20,5 +20,7 @@ export default {
   digdig,
   smashkarts,
   kartbros,
+  // Bike Bros plays on the same servers as Kart Bros (*.kartbros.io), with the same protocol.
+  bikebros: sessionGame("bikebros"),
   fartnership,
 };
